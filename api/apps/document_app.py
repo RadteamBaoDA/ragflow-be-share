@@ -596,7 +596,10 @@ async def get_image(image_id):
         if len(arr) != 2:
             return get_data_error_result(message="Image not found.")
         bkt, nm = image_id.split("-")
-        response = await make_response(settings.STORAGE_IMPL.get(bkt, nm))
+        image_data = settings.STORAGE_IMPL.get(bkt, nm)
+        if not image_data:
+            return get_data_error_result(message="Image not found.")
+        response = await make_response(image_data)
         response.headers.set("Content-Type", "image/JPEG")
         return response
     except Exception as e:

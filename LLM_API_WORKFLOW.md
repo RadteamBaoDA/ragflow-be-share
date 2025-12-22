@@ -85,3 +85,54 @@ This file handles requests under the `/v1/conversation` prefix, primarily used b
 6.  **Response Formatting**:
     *   The generated text is processed (e.g., extracting reasoning, formatting references).
     *   The response is sent back to the client, either as a complete JSON object or as a stream of data chunks.
+
+## Deep Dive: From Service to LLM Provider
+
+The connection from the `DialogService` to the actual LLM provider involves several layers of abstraction to handle different providers (OpenAI, Azure, etc.) uniformly.
+
+### 1. `api/db/services/dialog_service.py` (`chat` function)
+The `chat` function orchestrates the retrieval and generation process.
+*   **Retrieval**: Uses `settings.retriever.retrieval` to fetch relevant documents from the Knowledge Base (Elasticsearch/Infinity).
+*   **Model Initialization**: Calls `get_models(dialog)` which initializes an `LLMBundle`.
+    ```python
+    chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
+    ```
+*   **Prompt Construction**: Merges system prompts, retrieved knowledge, and user history.
+*   **Generation**: Calls `chat_mdl.chat_streamly(...)` or `chat_mdl.chat(...)`.
+
+### 2. `api/db/services/llm_service.py` (`LLMBundle`)
+`LLMBundle` acts as a wrapper around the tenant-specific model instance.
+*   **Inheritance**: Inherits from `LLM4Tenant`.
+*   **Initialization**: Calls `TenantLLMService.model_instance(...)` to create the actual model object.
+*   **Methods**: `chat()` and `chat_streamly()` delegate to `self.mdl.chat()` and `self.mdl.chat_streamly()`, while handling token usage tracking and Langfuse tracing.
+
+### 3. `api/db/services/tenant_llm_service.py` (`TenantLLMService`)
+This service is responsible for instantiating the correct Python class for the specific LLM provider.
+*   **`model_instance` method**:
+    *   Retrieves the API key and configuration for the given tenant and model name using `get_model_config`.
+    *   Determines the `llm_factory` (e.g., "OpenAI", "Azure-OpenAI", "HuggingFace").
+    *   Instantiates the corresponding class from `rag.llm` module.
+    *   **Example Mapping**:
+        *   `OpenAI` -> `ChatModel['OpenAI']` (which is `GptTurbo`)
+        *   `Azure-OpenAI` -> `ChatModel['Azure-OpenAI']` (which is `AzureChat`)
+
+### 4. `rag/llm/chat_model.py` (Model Implementations)
+This file contains the concrete implementations for various LLM providers. All classes inherit from `Base` (or `LiteLLMBase`).
+
+*   **`Base` Class**:
+    *   Initializes the `openai.OpenAI` client (or compatible clients).
+    *   Implements `_chat` and `_chat_streamly` using `self.client.chat.completions.create`.
+    *   Handles retries (exponential backoff) and error classification.
+*   **Specific Implementations**:
+    *   **`GptTurbo`**: Uses the standard `OpenAI` client.
+    *   **`AzureChat`**: Uses `AzureOpenAI` client.
+    *   **`ZhipuChat`**: Uses `ZhipuAI` client.
+    *   **`LiteLLMBase`**: Uses `litellm.completion` to support a wide range of providers (e.g., Bedrock, Anthropic, Ollama).
+
+### Summary Chain of Calls
+1.  **API**: `chat_completion` (Controller)
+2.  **Service**: `DialogService.chat(...)`
+3.  **Wrapper**: `LLMBundle.chat_streamly(...)`
+4.  **Factory**: `TenantLLMService.model_instance(...)` returns `GptTurbo` (example).
+5.  **Driver**: `GptTurbo.chat_streamly(...)` -> `Base._chat_streamly(...)`
+6.  **Client**: `openai.OpenAI().chat.completions.create(...)` -> **External API**

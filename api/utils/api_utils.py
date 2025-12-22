@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 
+import asyncio
 import functools
 import inspect
 import json
@@ -663,3 +664,27 @@ def get_allowed_llm_factories() -> list:
         return factories
 
     return [factory for factory in factories if factory.name in settings.ALLOWED_LLM_FACTORIES]
+
+async def stream_generator(generator):
+    """
+    Wrap synchronous generator in an async iterator.
+    """
+    def _next():
+        try:
+            return next(generator), None
+        except StopIteration:
+            return None, StopIteration
+        except Exception as e:
+            return None, e
+
+    while True:
+        try:
+            item, error = await asyncio.to_thread(_next)
+        except Exception as e:
+            item, error = None, e
+
+        if error:
+            if error is StopIteration:
+                break
+            raise error
+        yield item

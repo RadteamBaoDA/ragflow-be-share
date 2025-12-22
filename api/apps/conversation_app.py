@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import json
 import re
 import logging
@@ -26,7 +27,7 @@ from api.db.services.llm_service import LLMBundle
 from api.db.services.search_service import SearchService
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.db.services.user_service import TenantService, UserTenantService
-from api.utils.api_utils import get_data_error_result, get_json_result, server_error_response, validate_request
+from api.utils.api_utils import get_data_error_result, get_json_result, server_error_response, validate_request, stream_generator
 from rag.prompts.template import load_prompt
 from rag.prompts.generator import chunks_format
 from common.constants import RetCode, LLMType
@@ -230,7 +231,7 @@ async def completion():
             yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
         if req.get("stream", True):
-            resp = Response(stream(), mimetype="text/event-stream")
+            resp = Response(stream_generator(stream()), mimetype="text/event-stream")
             resp.headers.add_header("Cache-control", "no-cache")
             resp.headers.add_header("Connection", "keep-alive")
             resp.headers.add_header("X-Accel-Buffering", "no")
@@ -238,12 +239,15 @@ async def completion():
             return resp
 
         else:
-            answer = None
-            for ans in chat(dia, msg, **req):
-                answer = structure_answer(conv, ans, message_id, conv.id)
-                if not is_embedded:
-                    ConversationService.update_by_id(conv.id, conv.to_dict())
-                break
+            def generate_sync():
+                answer = None
+                for ans in chat(dia, msg, **req):
+                    answer = structure_answer(conv, ans, message_id, conv.id)
+                    if not is_embedded:
+                        ConversationService.update_by_id(conv.id, conv.to_dict())
+                    break
+                return answer
+            answer = await asyncio.to_thread(generate_sync)
             return get_json_result(data=answer)
     except Exception as e:
         return server_error_response(e)
@@ -273,7 +277,7 @@ async def tts():
         except Exception as e:
             yield ("data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e)}}, ensure_ascii=False)).encode("utf-8")
 
-    resp = Response(stream_audio(), mimetype="audio/mpeg")
+    resp = Response(stream_generator(stream_audio()), mimetype="audio/mpeg")
     resp.headers.add_header("Cache-Control", "no-cache")
     resp.headers.add_header("Connection", "keep-alive")
     resp.headers.add_header("X-Accel-Buffering", "no")
@@ -355,7 +359,7 @@ async def ask_about():
             yield "data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e), "reference": []}}, ensure_ascii=False) + "\n\n"
         yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
-    resp = Response(stream(), mimetype="text/event-stream")
+    resp = Response(stream_generator(stream()), mimetype="text/event-stream")
     resp.headers.add_header("Cache-control", "no-cache")
     resp.headers.add_header("Connection", "keep-alive")
     resp.headers.add_header("X-Accel-Buffering", "no")

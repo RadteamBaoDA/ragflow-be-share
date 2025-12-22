@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import json
 import re
 import time
@@ -35,12 +36,13 @@ from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from common.misc_utils import get_uuid
 from api.utils.api_utils import check_duplicate_ids, get_data_openai, get_error_data_result, get_json_result, \
-    get_result, server_error_response, token_required, validate_request
+    get_result, server_error_response, token_required, validate_request, stream_generator
 from rag.app.tag import label_question
 from rag.prompts.template import load_prompt
 from rag.prompts.generator import cross_languages, gen_meta_filter, keyword_extraction, chunks_format
 from common.constants import RetCode, LLMType, StatusEnum
 from common import settings
+
 
 @manager.route("/chats/<chat_id>/sessions", methods=["POST"])  # noqa: F821
 @token_required
@@ -131,7 +133,7 @@ async def chat_completion(tenant_id, chat_id):
         if not ConversationService.query(id=req["session_id"], dialog_id=chat_id):
             return get_error_data_result(f"You don't own the session {req['session_id']}")
     if req.get("stream", True):
-        resp = Response(rag_completion(tenant_id, chat_id, **req), mimetype="text/event-stream")
+        resp = Response(stream_generator(rag_completion(tenant_id, chat_id, **req)), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
@@ -139,10 +141,13 @@ async def chat_completion(tenant_id, chat_id):
 
         return resp
     else:
-        answer = None
-        for ans in rag_completion(tenant_id, chat_id, **req):
-            answer = ans
-            break
+        def generate_sync():
+            answer = None
+            for ans in rag_completion(tenant_id, chat_id, **req):
+                answer = ans
+                break
+            return answer
+        answer = await asyncio.to_thread(generate_sync)
         return get_result(data=answer)
 
 
@@ -333,18 +338,21 @@ async def chat_completion_openai_like(tenant_id, chat_id):
             yield f"data:{json.dumps(response, ensure_ascii=False)}\n\n"
             yield "data:[DONE]\n\n"
 
-        resp = Response(streamed_response_generator(chat_id, dia, msg), mimetype="text/event-stream")
+        resp = Response(stream_generator(streamed_response_generator(chat_id, dia, msg)), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
     else:
-        answer = None
-        for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
-            # focus answer content only
-            answer = ans
-            break
+        def generate_sync():
+            answer = None
+            for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
+                # focus answer content only
+                answer = ans
+                break
+            return answer
+        answer = await asyncio.to_thread(generate_sync)
         content = answer["answer"]
 
         response = {
@@ -411,14 +419,14 @@ async def agents_completion_openai_compatibility(tenant_id, agent_id):
     stream = req.pop("stream", False)
     if stream:
         resp = Response(
-            completion_openai(
+            stream_generator(completion_openai(
                 tenant_id,
                 agent_id,
                 question,
                 session_id=req.pop("session_id", req.get("id", "")) or req.get("metadata", {}).get("id", ""),
                 stream=True,
                 **req,
-            ),
+            )),
             mimetype="text/event-stream",
         )
         resp.headers.add_header("Cache-control", "no-cache")
@@ -428,16 +436,18 @@ async def agents_completion_openai_compatibility(tenant_id, agent_id):
         return resp
     else:
         # For non-streaming, just return the response directly
-        response = next(
-            completion_openai(
-                tenant_id,
-                agent_id,
-                question,
-                session_id=req.pop("session_id", req.get("id", "")) or req.get("metadata", {}).get("id", ""),
-                stream=False,
-                **req,
+        def generate_sync():
+            return next(
+                completion_openai(
+                    tenant_id,
+                    agent_id,
+                    question,
+                    session_id=req.pop("session_id", req.get("id", "")) or req.get("metadata", {}).get("id", ""),
+                    stream=False,
+                    **req,
+                )
             )
-        )
+        response = await asyncio.to_thread(generate_sync)
         return jsonify(response)
 
 
@@ -463,7 +473,7 @@ async def agent_completions(tenant_id, agent_id):
 
             yield "data:[DONE]\n\n"
 
-        resp = Response(generate(), mimetype="text/event-stream")
+        resp = Response(stream_generator(generate()), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
@@ -473,22 +483,27 @@ async def agent_completions(tenant_id, agent_id):
     full_content = ""
     reference = {}
     final_ans = ""
-    for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
-        try:
-            ans = json.loads(answer[5:])
+    def generate_sync():
+        full_content = ""
+        reference = {}
+        final_ans = ""
+        for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
+            try:
+                ans = json.loads(answer[5:])
 
-            if ans["event"] == "message":
-                full_content += ans["data"]["content"]
+                if ans["event"] == "message":
+                    full_content += ans["data"]["content"]
 
-            if ans.get("data", {}).get("reference", None):
-                reference.update(ans["data"]["reference"])
+                if ans.get("data", {}).get("reference", None):
+                    reference.update(ans["data"]["reference"])
 
-            final_ans = ans
-        except Exception as e:
-            return get_result(data=f"**ERROR**: {str(e)}")
-    final_ans["data"]["content"] = full_content
-    final_ans["data"]["reference"] = reference
-    return get_result(data=final_ans)
+                final_ans = ans
+            except Exception as e:
+                return get_result(data=f"**ERROR**: {str(e)}")
+        final_ans["data"]["content"] = full_content
+        final_ans["data"]["reference"] = reference
+        return get_result(data=final_ans)
+    return await asyncio.to_thread(generate_sync)
 
 
 @manager.route("/chats/<chat_id>/sessions", methods=["GET"])  # noqa: F821
@@ -745,7 +760,7 @@ async def ask_about(tenant_id):
                 ensure_ascii=False) + "\n\n"
         yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
-    resp = Response(stream(), mimetype="text/event-stream")
+    resp = Response(stream_generator(stream()), mimetype="text/event-stream")
     resp.headers.add_header("Cache-control", "no-cache")
     resp.headers.add_header("Connection", "keep-alive")
     resp.headers.add_header("X-Accel-Buffering", "no")
@@ -789,19 +804,21 @@ Reason:
  - At the same time, related terms can also help search engines better understand user needs and return more accurate search results.
 
 """
-    ans = chat_mdl.chat(
-        prompt,
-        [
-            {
-                "role": "user",
-                "content": f"""
-Keywords: {question}
-Related search terms:
-    """,
-            }
-        ],
-        {"temperature": 0.9},
-    )
+    def generate_sync():
+        return chat_mdl.chat(
+            prompt,
+            [
+                {
+                    "role": "user",
+                    "content": f"""
+    Keywords: {question}
+    Related search terms:
+        """,
+                }
+            ],
+            {"temperature": 0.9},
+        )
+    ans = await asyncio.to_thread(generate_sync)
     return get_result(data=[re.sub(r"^[0-9]\. ", "", a) for a in ans.split("\n") if re.match(r"^[0-9]\. ", a)])
 
 
@@ -821,15 +838,17 @@ async def chatbot_completions(dialog_id):
         req["quote"] = False
 
     if req.get("stream", True):
-        resp = Response(iframe_completion(dialog_id, **req), mimetype="text/event-stream")
+        resp = Response(stream_generator(iframe_completion(dialog_id, **req)), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
 
-    for answer in iframe_completion(dialog_id, **req):
-        return get_result(data=answer)
+    def generate_sync():
+        for answer in iframe_completion(dialog_id, **req):
+            return get_result(data=answer)
+    return await asyncio.to_thread(generate_sync)
 
 
 @manager.route("/chatbots/<dialog_id>/info", methods=["GET"])  # noqa: F821
@@ -868,15 +887,17 @@ async def agent_bot_completions(agent_id):
         return get_error_data_result(message='Authentication error: API key is invalid!"')
 
     if req.get("stream", True):
-        resp = Response(agent_completion(objs[0].tenant_id, agent_id, **req), mimetype="text/event-stream")
+        resp = Response(stream_generator(agent_completion(objs[0].tenant_id, agent_id, **req)), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
 
-    for answer in agent_completion(objs[0].tenant_id, agent_id, **req):
-        return get_result(data=answer)
+    def generate_sync():
+        for answer in agent_completion(objs[0].tenant_id, agent_id, **req):
+            return get_result(data=answer)
+    return await asyncio.to_thread(generate_sync)
 
 
 @manager.route("/agentbots/<agent_id>/inputs", methods=["GET"])  # noqa: F821
@@ -930,7 +951,7 @@ async def ask_about_embedded():
                 ensure_ascii=False) + "\n\n"
         yield "data:" + json.dumps({"code": 0, "message": "", "data": True}, ensure_ascii=False) + "\n\n"
 
-    resp = Response(stream(), mimetype="text/event-stream")
+    resp = Response(stream_generator(stream()), mimetype="text/event-stream")
     resp.headers.add_header("Cache-control", "no-cache")
     resp.headers.add_header("Connection", "keep-alive")
     resp.headers.add_header("X-Accel-Buffering", "no")
@@ -1066,19 +1087,21 @@ async def related_questions_embedded():
 
     gen_conf = search_config.get("llm_setting", {"temperature": 0.9})
     prompt = load_prompt("related_question")
-    ans = chat_mdl.chat(
-        prompt,
-        [
-            {
-                "role": "user",
-                "content": f"""
-Keywords: {question}
-Related search terms:
-    """,
-            }
-        ],
-        gen_conf,
-    )
+    def generate_sync():
+        return chat_mdl.chat(
+            prompt,
+            [
+                {
+                    "role": "user",
+                    "content": f"""
+    Keywords: {question}
+    Related search terms:
+        """,
+                }
+            ],
+            gen_conf,
+        )
+    ans = await asyncio.to_thread(generate_sync)
     return get_json_result(data=[re.sub(r"^[0-9]\. ", "", a) for a in ans.split("\n") if re.match(r"^[0-9]\. ", a)])
 
 
@@ -1130,7 +1153,10 @@ async def mindmap():
     search_id = req.get("search_id", "")
     search_app = SearchService.get_detail(search_id) if search_id else {}
 
-    mind_map = gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
+    def generate_sync():
+        return gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
+
+    mind_map = await asyncio.to_thread(generate_sync)
     if "error" in mind_map:
         return server_error_response(Exception(mind_map["error"]))
     return get_json_result(data=mind_map)

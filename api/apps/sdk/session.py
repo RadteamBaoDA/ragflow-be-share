@@ -992,22 +992,20 @@ async def retrieval_test_embedded():
     if not tenant_id:
         return get_error_data_result(message="permission denined.")
 
-    if req.get("search_id", ""):
-        search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
-        meta_data_filter = search_config.get("meta_data_filter", {})
-        metas = DocumentService.get_meta_by_kbs(kb_ids)
-        if meta_data_filter.get("method") == "auto":
-            chat_mdl = LLMBundle(tenant_id, LLMType.CHAT, llm_name=search_config.get("chat_id", ""))
-            filters = gen_meta_filter(chat_mdl, metas, question)
-            doc_ids.extend(meta_filter(metas, filters))
-            if not doc_ids:
-                doc_ids = None
-        elif meta_data_filter.get("method") == "manual":
-            doc_ids.extend(meta_filter(metas, meta_data_filter["manual"]))
-            if not doc_ids:
-                doc_ids = None
+    def retrieval_task():
+        search_config = {}
+        meta_data_filter = {}
+        if req.get("search_id", ""):
+            search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
+            meta_data_filter = search_config.get("meta_data_filter", {})
+            metas = DocumentService.get_meta_by_kbs(kb_ids)
+            if meta_data_filter.get("method") == "auto":
+                chat_mdl = LLMBundle(tenant_id, LLMType.CHAT, llm_name=search_config.get("chat_id", ""))
+                filters = gen_meta_filter(chat_mdl, metas, question)
+                doc_ids.extend(meta_filter(metas, filters))
+            elif meta_data_filter.get("method") == "manual":
+                doc_ids.extend(meta_filter(metas, meta_data_filter["manual"]))
 
-    try:
         tenants = UserTenantService.query(user_id=tenant_id)
         for kb_id in kb_ids:
             for tenant in tenants:
@@ -1015,15 +1013,15 @@ async def retrieval_test_embedded():
                     tenant_ids.append(tenant.tenant_id)
                     break
             else:
-                return get_json_result(data=False, message="Only owner of knowledgebase authorized for this operation.",
-                                       code=RetCode.OPERATING_ERROR)
+                raise Exception("Only owner of knowledgebase authorized for this operation.")
 
         e, kb = KnowledgebaseService.get_by_id(kb_ids[0])
         if not e:
-            return get_error_data_result(message="Knowledgebase not found!")
+            raise Exception("Knowledgebase not found!")
 
+        final_question = question
         if langs:
-            question = cross_languages(kb.tenant_id, None, question, langs)
+            final_question = cross_languages(kb.tenant_id, None, final_question, langs)
 
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 
@@ -1033,15 +1031,15 @@ async def retrieval_test_embedded():
 
         if req.get("keyword", False):
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)
-            question += keyword_extraction(chat_mdl, question)
+            final_question += keyword_extraction(chat_mdl, final_question)
 
-        labels = label_question(question, [kb])
+        labels = label_question(final_question, [kb])
         ranks = settings.retriever.retrieval(
-            question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
+            final_question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
             doc_ids, rerank_mdl=rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
         )
         if use_kg:
-            ck = settings.kg_retriever.retrieval(question, tenant_ids, kb_ids, embd_mdl,
+            ck = settings.kg_retriever.retrieval(final_question, tenant_ids, kb_ids, embd_mdl,
                                                  LLMBundle(kb.tenant_id, LLMType.CHAT))
             if ck["content_with_weight"]:
                 ranks["chunks"].insert(0, ck)
@@ -1049,7 +1047,10 @@ async def retrieval_test_embedded():
         for c in ranks["chunks"]:
             c.pop("vector", None)
         ranks["labels"] = labels
+        return ranks
 
+    try:
+        ranks = await asyncio.to_thread(retrieval_task)
         return get_json_result(data=ranks)
     except Exception as e:
         if str(e).find("not_found") > 0:

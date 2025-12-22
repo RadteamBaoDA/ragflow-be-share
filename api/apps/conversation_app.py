@@ -379,7 +379,10 @@ async def mindmap():
     kb_ids.extend(req["kb_ids"])
     kb_ids = list(set(kb_ids))
 
-    mind_map = gen_mindmap(req["question"], kb_ids, search_app.get("tenant_id", current_user.id), search_config)
+    def generate_sync():
+        return gen_mindmap(req["question"], kb_ids, search_app.get("tenant_id", current_user.id), search_config)
+
+    mind_map = await asyncio.to_thread(generate_sync)
     if "error" in mind_map:
         return server_error_response(Exception(mind_map["error"]))
     return get_json_result(data=mind_map)
@@ -406,17 +409,19 @@ async def related_questions():
     if "parameter" in gen_conf:
         del gen_conf["parameter"]
     prompt = load_prompt("related_question")
-    ans = chat_mdl.chat(
-        prompt,
-        [
-            {
-                "role": "user",
-                "content": f"""
-Keywords: {question}
-Related search terms:
-    """,
-            }
-        ],
-        gen_conf,
-    )
+    def generate_sync():
+        return chat_mdl.chat(
+            prompt,
+            [
+                {
+                    "role": "user",
+                    "content": f"""
+    Keywords: {question}
+    Related search terms:
+        """,
+                }
+            ],
+            gen_conf,
+        )
+    ans = await asyncio.to_thread(generate_sync)
     return get_json_result(data=[re.sub(r"^[0-9]\. ", "", a) for a in ans.split("\n") if re.match(r"^[0-9]\. ", a)])

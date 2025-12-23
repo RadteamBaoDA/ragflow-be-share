@@ -20,7 +20,6 @@ import re
 import xxhash
 from quart import request
 
-import asyncio
 from api.db.services.dialog_service import meta_filter
 from api.db.services.document_service import DocumentService
 from api.db.services.knowledgebase_service import KnowledgebaseService
@@ -28,7 +27,7 @@ from api.db.services.llm_service import LLMBundle
 from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from api.utils.api_utils import get_data_error_result, get_json_result, server_error_response, validate_request, \
-    request_json, SyncLLMWrapper
+    request_json
 from rag.app.qa import beAdoc, rmPrefix
 from rag.app.tag import label_question
 from rag.nlp import rag_tokenizer, search
@@ -168,7 +167,7 @@ async def set():
             d = beAdoc(d, q, a, not any(
                 [rag_tokenizer.is_chinese(t) for t in q + a]))
 
-        v, c = await embd_mdl.encode([doc.name, req["content_with_weight"] if not d.get("question_kwd") else "\n".join(d["question_kwd"])])
+        v, c = embd_mdl.encode([doc.name, req["content_with_weight"] if not d.get("question_kwd") else "\n".join(d["question_kwd"])])
         v = 0.1 * v[0] + 0.9 * v[1] if doc.parser_id != ParserType.QA else v[1]
         d["q_%d_vec" % len(v)] = v.tolist()
         settings.docStoreConn.update({"id": req["chunk_id"]}, d, search.index_name(tenant_id), doc.kb_id)
@@ -267,7 +266,7 @@ async def create():
         embd_id = DocumentService.get_embd_id(req["doc_id"])
         embd_mdl = LLMBundle(tenant_id, LLMType.EMBEDDING.value, embd_id)
 
-        v, c = await embd_mdl.encode([doc.name, req["content_with_weight"] if not d["question_kwd"] else "\n".join(d["question_kwd"])])
+        v, c = embd_mdl.encode([doc.name, req["content_with_weight"] if not d["question_kwd"] else "\n".join(d["question_kwd"])])
         v = 0.1 * v[0] + 0.9 * v[1]
         d["q_%d_vec" % len(v)] = v.tolist()
         settings.docStoreConn.insert([d], search.index_name(tenant_id), doc.kb_id)
@@ -306,7 +305,7 @@ async def retrieval_test():
         metas = DocumentService.get_meta_by_kbs(kb_ids)
         if meta_data_filter.get("method") == "auto":
             chat_mdl = LLMBundle(current_user.id, LLMType.CHAT, llm_name=search_config.get("chat_id", ""))
-            filters = await gen_meta_filter(chat_mdl, metas, question)
+            filters = gen_meta_filter(chat_mdl, metas, question)
             doc_ids.extend(meta_filter(metas, filters))
             if not doc_ids:
                 doc_ids = None
@@ -333,7 +332,7 @@ async def retrieval_test():
             return get_data_error_result(message="Knowledgebase not found!")
 
         if langs:
-            question = await cross_languages(kb.tenant_id, None, question, langs)
+            question = cross_languages(kb.tenant_id, None, question, langs)
 
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 
@@ -343,33 +342,23 @@ async def retrieval_test():
 
         if req.get("keyword", False):
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)
-            question += await keyword_extraction(chat_mdl, question)
-
-        sync_embd_mdl = SyncLLMWrapper(embd_mdl)
-        sync_rerank_mdl = SyncLLMWrapper(rerank_mdl) if rerank_mdl else None
+            question += keyword_extraction(chat_mdl, question)
 
         labels = label_question(question, [kb])
-
-        def run_retrieval():
-            return settings.retriever.retrieval(question, sync_embd_mdl, tenant_ids, kb_ids, page, size,
+        ranks = settings.retriever.retrieval(question, embd_mdl, tenant_ids, kb_ids, page, size,
                                float(req.get("similarity_threshold", 0.0)),
                                float(req.get("vector_similarity_weight", 0.3)),
                                top,
-                               doc_ids, rerank_mdl=sync_rerank_mdl,
+                               doc_ids, rerank_mdl=rerank_mdl,
                                              highlight=req.get("highlight", False),
                                rank_feature=labels
                                )
-
-        ranks = await asyncio.to_thread(run_retrieval)
-
         if use_kg:
-            def run_kg_retrieval():
-                return settings.kg_retriever.retrieval(question,
+            ck = settings.kg_retriever.retrieval(question,
                                                    tenant_ids,
                                                    kb_ids,
-                                                   sync_embd_mdl,
-                                                   SyncLLMWrapper(LLMBundle(kb.tenant_id, LLMType.CHAT)))
-            ck = await asyncio.to_thread(run_kg_retrieval)
+                                                   embd_mdl,
+                                                   LLMBundle(kb.tenant_id, LLMType.CHAT))
             if ck["content_with_weight"]:
                 ranks["chunks"].insert(0, ck)
 

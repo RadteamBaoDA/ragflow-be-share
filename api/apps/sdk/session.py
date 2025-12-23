@@ -35,13 +35,12 @@ from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from common.misc_utils import get_uuid
 from api.utils.api_utils import check_duplicate_ids, get_data_openai, get_error_data_result, get_json_result, \
-    get_result, server_error_response, token_required, validate_request, SyncLLMWrapper
+    get_result, server_error_response, token_required, validate_request
 from rag.app.tag import label_question
 from rag.prompts.template import load_prompt
 from rag.prompts.generator import cross_languages, gen_meta_filter, keyword_extraction, chunks_format
 from common.constants import RetCode, LLMType, StatusEnum
 from common import settings
-
 
 @manager.route("/chats/<chat_id>/sessions", methods=["POST"])  # noqa: F821
 @token_required
@@ -141,7 +140,7 @@ async def chat_completion(tenant_id, chat_id):
         return resp
     else:
         answer = None
-        async for ans in rag_completion(tenant_id, chat_id, **req):
+        for ans in rag_completion(tenant_id, chat_id, **req):
             answer = ans
             break
         return get_result(data=answer)
@@ -245,7 +244,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
         # The value for the usage field on all chunks except for the last one will be null.
         # The usage field on the last chunk contains token usage statistics for the entire request.
         # The choices field on the last chunk will always be an empty array [].
-        async def streamed_response_generator(chat_id, dia, msg):
+        def streamed_response_generator(chat_id, dia, msg):
             token_used = 0
             answer_cache = ""
             reasoning_cache = ""
@@ -274,7 +273,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
             }
 
             try:
-                async for ans in chat(dia, msg, True, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
+                for ans in chat(dia, msg, True, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
                     last_ans = ans
                     answer = ans["answer"]
 
@@ -342,7 +341,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
         return resp
     else:
         answer = None
-        async for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
+        for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
             # focus answer content only
             answer = ans
             break
@@ -429,17 +428,16 @@ async def agents_completion_openai_compatibility(tenant_id, agent_id):
         return resp
     else:
         # For non-streaming, just return the response directly
-        response = None
-        async for chunk in completion_openai(
-            tenant_id,
-            agent_id,
-            question,
-            session_id=req.pop("session_id", req.get("id", "")) or req.get("metadata", {}).get("id", ""),
-            stream=False,
-            **req,
-        ):
-            response = chunk
-            break
+        response = next(
+            completion_openai(
+                tenant_id,
+                agent_id,
+                question,
+                session_id=req.pop("session_id", req.get("id", "")) or req.get("metadata", {}).get("id", ""),
+                stream=False,
+                **req,
+            )
+        )
         return jsonify(response)
 
 
@@ -450,8 +448,8 @@ async def agent_completions(tenant_id, agent_id):
 
     if req.get("stream", True):
 
-        async def generate():
-            async for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
+        def generate():
+            for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
                 if isinstance(answer, str):
                     try:
                         ans = json.loads(answer[5:])  # remove "data:"
@@ -475,7 +473,7 @@ async def agent_completions(tenant_id, agent_id):
     full_content = ""
     reference = {}
     final_ans = ""
-    async for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
+    for answer in agent_completion(tenant_id=tenant_id, agent_id=agent_id, **req):
         try:
             ans = json.loads(answer[5:])
 
@@ -736,10 +734,10 @@ async def ask_about(tenant_id):
             return get_error_data_result(f"The dataset {kb_id} doesn't own parsed file")
     uid = tenant_id
 
-    async def stream():
+    def stream():
         nonlocal req, uid
         try:
-            async for ans in ask(req["question"], req["kb_ids"], uid):
+            for ans in ask(req["question"], req["kb_ids"], uid):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
             yield "data:" + json.dumps(
@@ -791,7 +789,7 @@ Reason:
  - At the same time, related terms can also help search engines better understand user needs and return more accurate search results.
 
 """
-    ans = await chat_mdl.chat(
+    ans = chat_mdl.chat(
         prompt,
         [
             {
@@ -830,7 +828,7 @@ async def chatbot_completions(dialog_id):
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
 
-    async for answer in iframe_completion(dialog_id, **req):
+    for answer in iframe_completion(dialog_id, **req):
         return get_result(data=answer)
 
 
@@ -877,7 +875,7 @@ async def agent_bot_completions(agent_id):
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
 
-    async for answer in agent_completion(objs[0].tenant_id, agent_id, **req):
+    for answer in agent_completion(objs[0].tenant_id, agent_id, **req):
         return get_result(data=answer)
 
 
@@ -921,10 +919,10 @@ async def ask_about_embedded():
         if search_app := SearchService.get_detail(search_id):
             search_config = search_app.get("search_config", {})
 
-    async def stream():
+    def stream():
         nonlocal req, uid
         try:
-            async for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
+            for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
             yield "data:" + json.dumps(
@@ -979,7 +977,7 @@ async def retrieval_test_embedded():
         metas = DocumentService.get_meta_by_kbs(kb_ids)
         if meta_data_filter.get("method") == "auto":
             chat_mdl = LLMBundle(tenant_id, LLMType.CHAT, llm_name=search_config.get("chat_id", ""))
-            filters = await gen_meta_filter(chat_mdl, metas, question)
+            filters = gen_meta_filter(chat_mdl, metas, question)
             doc_ids.extend(meta_filter(metas, filters))
             if not doc_ids:
                 doc_ids = None
@@ -1004,7 +1002,7 @@ async def retrieval_test_embedded():
             return get_error_data_result(message="Knowledgebase not found!")
 
         if langs:
-            question = await cross_languages(kb.tenant_id, None, question, langs)
+            question = cross_languages(kb.tenant_id, None, question, langs)
 
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 
@@ -1014,30 +1012,16 @@ async def retrieval_test_embedded():
 
         if req.get("keyword", False):
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)
-            question += await keyword_extraction(chat_mdl, question)
-
-        # Retrieval is sync, running in thread but models might be async or sync.
-        # LLMBundle is async-compatible now. If retriever calls .encode(), it might need sync wrapper if it doesn't await.
-        # Assuming settings.retriever.retrieval calls model.encode().
-
-        sync_embd_mdl = SyncLLMWrapper(embd_mdl)
-        sync_rerank_mdl = SyncLLMWrapper(rerank_mdl) if rerank_mdl else None
+            question += keyword_extraction(chat_mdl, question)
 
         labels = label_question(question, [kb])
-
-        def run_retrieval():
-            return settings.retriever.retrieval(
-                question, sync_embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
-                doc_ids, rerank_mdl=sync_rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
-            )
-
-        ranks = await asyncio.to_thread(run_retrieval)
-
+        ranks = settings.retriever.retrieval(
+            question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
+            doc_ids, rerank_mdl=rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
+        )
         if use_kg:
-            def run_kg_retrieval():
-                return settings.kg_retriever.retrieval(question, tenant_ids, kb_ids, sync_embd_mdl,
-                                                 SyncLLMWrapper(LLMBundle(kb.tenant_id, LLMType.CHAT)))
-            ck = await asyncio.to_thread(run_kg_retrieval)
+            ck = settings.kg_retriever.retrieval(question, tenant_ids, kb_ids, embd_mdl,
+                                                 LLMBundle(kb.tenant_id, LLMType.CHAT))
             if ck["content_with_weight"]:
                 ranks["chunks"].insert(0, ck)
 
@@ -1082,7 +1066,7 @@ async def related_questions_embedded():
 
     gen_conf = search_config.get("llm_setting", {"temperature": 0.9})
     prompt = load_prompt("related_question")
-    ans = await chat_mdl.chat(
+    ans = chat_mdl.chat(
         prompt,
         [
             {
@@ -1146,7 +1130,7 @@ async def mindmap():
     search_id = req.get("search_id", "")
     search_app = SearchService.get_detail(search_id) if search_id else {}
 
-    mind_map = await gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
+    mind_map = gen_mindmap(req["question"], req["kb_ids"], tenant_id, search_app.get("search_config", {}))
     if "error" in mind_map:
         return server_error_response(Exception(mind_map["error"]))
     return get_json_result(data=mind_map)

@@ -1455,13 +1455,13 @@ class LiteLLMBase(ABC):
             del gen_conf["max_tokens"]
         return gen_conf
 
-    async def _chat(self, history, gen_conf, **kwargs):
+    def _chat(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY]" + json.dumps(history, ensure_ascii=False, indent=2))
         if self.model_name.lower().find("qwen3") >= 0:
             kwargs["extra_body"] = {"enable_thinking": False}
 
         completion_args = self._construct_completion_args(history=history, stream=False, tools=False, **gen_conf)
-        response = await litellm.acompletion(
+        response = litellm.completion(
             **completion_args,
             drop_params=True,
             timeout=self.timeout,
@@ -1475,7 +1475,7 @@ class LiteLLMBase(ABC):
 
         return ans, total_token_count_from_response(response)
 
-    async def _chat_streamly(self, history, gen_conf, **kwargs):
+    def _chat_streamly(self, history, gen_conf, **kwargs):
         logging.info("[HISTORY STREAMLY]" + json.dumps(history, ensure_ascii=False, indent=4))
         reasoning_start = False
 
@@ -1483,13 +1483,13 @@ class LiteLLMBase(ABC):
         stop = kwargs.get("stop")
         if stop:
             completion_args["stop"] = stop
-        response = await litellm.acompletion(
+        response = litellm.completion(
             **completion_args,
             drop_params=True,
             timeout=self.timeout,
         )
 
-        async for resp in response:
+        for resp in response:
             if not hasattr(resp, "choices") or not resp.choices:
                 continue
 
@@ -1535,7 +1535,7 @@ class LiteLLMBase(ABC):
     def _should_retry(self, error_code: str) -> bool:
         return error_code in self._retryable_errors
 
-    async def _exceptions(self, e, attempt) -> str | None:
+    def _exceptions(self, e, attempt) -> str | None:
         logging.exception("OpenAI chat_with_tools")
         # Classify the error
         error_code = self._classify_error(e)
@@ -1545,7 +1545,7 @@ class LiteLLMBase(ABC):
         if self._should_retry(error_code):
             delay = self._get_delay()
             logging.warning(f"Error: {error_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{self.max_retries})")
-            await asyncio.sleep(delay)
+            time.sleep(delay)
             return None
 
         return f"{ERROR_PREFIX}: {error_code} - {str(e)}"
@@ -1637,7 +1637,7 @@ class LiteLLMBase(ABC):
                 completion_args.update({"extra_body": extra_body})
         return completion_args
 
-    async def chat_with_tools(self, system: str, history: list, gen_conf: dict = {}):
+    def chat_with_tools(self, system: str, history: list, gen_conf: dict = {}):
         gen_conf = self._clean_conf(gen_conf)
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
@@ -1654,7 +1654,7 @@ class LiteLLMBase(ABC):
                     logging.info(f"{self.tools=}")
 
                     completion_args = self._construct_completion_args(history=history, stream=False, tools=True, **gen_conf)
-                    response = await litellm.acompletion(
+                    response = litellm.completion(
                         **completion_args,
                         drop_params=True,
                         timeout=self.timeout,
@@ -1691,19 +1691,19 @@ class LiteLLMBase(ABC):
                 logging.warning(f"Exceed max rounds: {self.max_rounds}")
                 history.append({"role": "user", "content": f"Exceed max rounds: {self.max_rounds}"})
 
-                response, token_count = await self._chat(history, gen_conf)
+                response, token_count = self._chat(history, gen_conf)
                 ans += response
                 tk_count += token_count
                 return ans, tk_count
 
             except Exception as e:
-                e = await self._exceptions(e, attempt)
+                e = self._exceptions(e, attempt)
                 if e:
                     return e, tk_count
 
         assert False, "Shouldn't be here."
 
-    async def chat(self, system, history, gen_conf={}, **kwargs):
+    def chat(self, system, history, gen_conf={}, **kwargs):
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
         gen_conf = self._clean_conf(gen_conf)
@@ -1711,10 +1711,10 @@ class LiteLLMBase(ABC):
         # Implement exponential backoff retry strategy
         for attempt in range(self.max_retries + 1):
             try:
-                response = await self._chat(history, gen_conf, **kwargs)
+                response = self._chat(history, gen_conf, **kwargs)
                 return response
             except Exception as e:
-                e = await self._exceptions(e, attempt)
+                e = self._exceptions(e, attempt)
                 if e:
                     return e, 0
         assert False, "Shouldn't be here."
@@ -1733,7 +1733,7 @@ class LiteLLMBase(ABC):
 
         return final_tool_calls
 
-    async def chat_streamly_with_tools(self, system: str, history: list, gen_conf: dict = {}):
+    def chat_streamly_with_tools(self, system: str, history: list, gen_conf: dict = {}):
         gen_conf = self._clean_conf(gen_conf)
         tools = self.tools
         if system and history and history[0].get("role") != "system":
@@ -1751,7 +1751,7 @@ class LiteLLMBase(ABC):
                     logging.info(f"{tools=}")
 
                     completion_args = self._construct_completion_args(history=history, stream=True, tools=True, **gen_conf)
-                    response = await litellm.acompletion(
+                    response = litellm.completion(
                         **completion_args,
                         drop_params=True,
                         timeout=self.timeout,
@@ -1760,7 +1760,7 @@ class LiteLLMBase(ABC):
                     final_tool_calls = {}
                     answer = ""
 
-                    async for resp in response:
+                    for resp in response:
                         if not hasattr(resp, "choices") or not resp.choices:
                             continue
 
@@ -1829,13 +1829,13 @@ class LiteLLMBase(ABC):
                 history.append({"role": "user", "content": f"Exceed max rounds: {self.max_rounds}"})
 
                 completion_args = self._construct_completion_args(history=history, stream=True, tools=True, **gen_conf)
-                response = await litellm.acompletion(
+                response = litellm.completion(
                     **completion_args,
                     drop_params=True,
                     timeout=self.timeout,
                 )
 
-                async for resp in response:
+                for resp in response:
                     if not hasattr(resp, "choices") or not resp.choices:
                         continue
                     delta = resp.choices[0].delta
@@ -1852,7 +1852,7 @@ class LiteLLMBase(ABC):
                 return
 
             except Exception as e:
-                e = await self._exceptions(e, attempt)
+                e = self._exceptions(e, attempt)
                 if e:
                     yield e
                     yield total_tokens
@@ -1860,14 +1860,14 @@ class LiteLLMBase(ABC):
 
         assert False, "Shouldn't be here."
 
-    async def chat_streamly(self, system, history, gen_conf: dict = {}, **kwargs):
+    def chat_streamly(self, system, history, gen_conf: dict = {}, **kwargs):
         if system and history and history[0].get("role") != "system":
             history.insert(0, {"role": "system", "content": system})
         gen_conf = self._clean_conf(gen_conf)
         ans = ""
         total_tokens = 0
         try:
-            async for delta_ans, tol in self._chat_streamly(history, gen_conf, **kwargs):
+            for delta_ans, tol in self._chat_streamly(history, gen_conf, **kwargs):
                 yield delta_ans
                 total_tokens += tol
         except openai.APIError as e:

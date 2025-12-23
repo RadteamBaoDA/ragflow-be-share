@@ -14,7 +14,6 @@
 #  limitations under the License.
 #
 
-import asyncio
 import functools
 import inspect
 import json
@@ -664,38 +663,3 @@ def get_allowed_llm_factories() -> list:
         return factories
 
     return [factory for factory in factories if factory.name in settings.ALLOWED_LLM_FACTORIES]
-
-class SyncLLMWrapper:
-    def __init__(self, async_model):
-        self.async_model = async_model
-        # Forward specific attributes if they exist
-        for attr in ['max_tokens', 'token_validate_pct', 'model_name']:
-            if hasattr(async_model, attr):
-                setattr(self, attr, getattr(async_model, attr))
-
-    def encode(self, *args, **kwargs):
-        # Create a new event loop for this thread if one doesn't exist
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        # Execute the async method
-        return loop.run_until_complete(self.async_model.encode(*args, **kwargs))
-
-    def encode_queries(self, *args, **kwargs):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.async_model.encode_queries(*args, **kwargs))
-
-    def chat(self, *args, **kwargs):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(self.async_model.chat(*args, **kwargs))

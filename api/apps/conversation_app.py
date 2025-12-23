@@ -13,7 +13,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-import asyncio
 import json
 import re
 import logging
@@ -217,10 +216,10 @@ async def completion():
             dia.llm_setting = chat_model_config
 
         is_embedded = bool(chat_model_id)
-        async def stream():
+        def stream():
             nonlocal dia, msg, req, conv
             try:
-                async for ans in chat(dia, msg, True, **req):
+                for ans in chat(dia, msg, True, **req):
                     ans = structure_answer(conv, ans, message_id, conv.id)
                     yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
                 if not is_embedded:
@@ -240,7 +239,7 @@ async def completion():
 
         else:
             answer = None
-            async for ans in chat(dia, msg, **req):
+            for ans in chat(dia, msg, **req):
                 answer = structure_answer(conv, ans, message_id, conv.id)
                 if not is_embedded:
                     ConversationService.update_by_id(conv.id, conv.to_dict())
@@ -266,11 +265,10 @@ async def tts():
 
     tts_mdl = LLMBundle(tenants[0]["tenant_id"], LLMType.TTS, tts_id)
 
-    async def stream_audio():
+    def stream_audio():
         try:
-            # Use unicode escapes to ensure regex is valid
-            for txt in re.split(r"[ \t\n\r,.;?!:，。；？！]+", text):
-                async for chunk in tts_mdl.tts(txt):
+            for txt in re.split(r"[，。/《》？；：！\n\r:;]+", text):
+                for chunk in tts_mdl.tts(txt):
                     yield chunk
         except Exception as e:
             yield ("data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e)}}, ensure_ascii=False)).encode("utf-8")
@@ -348,10 +346,10 @@ async def ask_about():
     if search_app:
         search_config = search_app.get("search_config", {})
 
-    async def stream():
+    def stream():
         nonlocal req, uid
         try:
-            async for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
+            for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
             yield "data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e), "reference": []}}, ensure_ascii=False) + "\n\n"
@@ -377,7 +375,7 @@ async def mindmap():
     kb_ids.extend(req["kb_ids"])
     kb_ids = list(set(kb_ids))
 
-    mind_map = await gen_mindmap(req["question"], kb_ids, search_app.get("tenant_id", current_user.id), search_config)
+    mind_map = gen_mindmap(req["question"], kb_ids, search_app.get("tenant_id", current_user.id), search_config)
     if "error" in mind_map:
         return server_error_response(Exception(mind_map["error"]))
     return get_json_result(data=mind_map)
@@ -404,17 +402,17 @@ async def related_questions():
     if "parameter" in gen_conf:
         del gen_conf["parameter"]
     prompt = load_prompt("related_question")
-    ans = await chat_mdl.chat(
-            prompt,
-            [
-                {
-                    "role": "user",
-                    "content": f"""
-    Keywords: {question}
-    Related search terms:
-        """,
-                }
-            ],
-            gen_conf,
-        )
+    ans = chat_mdl.chat(
+        prompt,
+        [
+            {
+                "role": "user",
+                "content": f"""
+Keywords: {question}
+Related search terms:
+    """,
+            }
+        ],
+        gen_conf,
+    )
     return get_json_result(data=[re.sub(r"^[0-9]\. ", "", a) for a in ans.split("\n") if re.match(r"^[0-9]\. ", a)])

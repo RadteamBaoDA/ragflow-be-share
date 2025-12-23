@@ -665,26 +665,37 @@ def get_allowed_llm_factories() -> list:
 
     return [factory for factory in factories if factory.name in settings.ALLOWED_LLM_FACTORIES]
 
-async def stream_generator(generator):
-    """
-    Wrap synchronous generator in an async iterator.
-    """
-    def _next():
-        try:
-            return next(generator), None
-        except StopIteration:
-            return None, StopIteration
-        except Exception as e:
-            return None, e
+class SyncLLMWrapper:
+    def __init__(self, async_model):
+        self.async_model = async_model
+        # Forward specific attributes if they exist
+        for attr in ['max_tokens', 'token_validate_pct', 'model_name']:
+            if hasattr(async_model, attr):
+                setattr(self, attr, getattr(async_model, attr))
 
-    while True:
+    def encode(self, *args, **kwargs):
+        # Create a new event loop for this thread if one doesn't exist
         try:
-            item, error = await asyncio.to_thread(_next)
-        except Exception as e:
-            item, error = None, e
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-        if error:
-            if error is StopIteration:
-                break
-            raise error
-        yield item
+        # Execute the async method
+        return loop.run_until_complete(self.async_model.encode(*args, **kwargs))
+
+    def encode_queries(self, *args, **kwargs):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(self.async_model.encode_queries(*args, **kwargs))
+
+    def chat(self, *args, **kwargs):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(self.async_model.chat(*args, **kwargs))

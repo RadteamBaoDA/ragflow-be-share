@@ -14,6 +14,7 @@
 #  limitations under the License.
 #
 import time
+import asyncio
 from uuid import uuid4
 from common.constants import StatusEnum
 from api.db.db_models import Conversation, DB
@@ -90,7 +91,7 @@ def structure_answer(conv, ans, message_id, session_id):
     return ans
 
 
-def completion(tenant_id, chat_id, question, name="New session", session_id=None, stream=True, **kwargs):
+async def completion(tenant_id, chat_id, question, name="New session", session_id=None, stream=True, **kwargs):
     assert name, "`name` can not be empty."
     dia = DialogService.query(id=chat_id, tenant_id=tenant_id, status=StatusEnum.VALID.value)
     assert dia, "You do not own the chat."
@@ -148,7 +149,7 @@ def completion(tenant_id, chat_id, question, name="New session", session_id=None
 
     if stream:
         try:
-            for ans in chat(dia, msg, True, **kwargs):
+            async for ans in chat(dia, msg, True, **kwargs):
                 ans = structure_answer(conv, ans, message_id, session_id)
                 yield "data:" + json.dumps({"code": 0, "data": ans}, ensure_ascii=False) + "\n\n"
             ConversationService.update_by_id(conv.id, conv.to_dict())
@@ -160,14 +161,14 @@ def completion(tenant_id, chat_id, question, name="New session", session_id=None
 
     else:
         answer = None
-        for ans in chat(dia, msg, False, **kwargs):
+        async for ans in chat(dia, msg, False, **kwargs):
             answer = structure_answer(conv, ans, message_id, session_id)
             ConversationService.update_by_id(conv.id, conv.to_dict())
             break
         yield answer
 
 
-def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwargs):
+async def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwargs):
     e, dia = DialogService.get_by_id(dialog_id)
     assert e, "Dialog not found"
     if not session_id:
@@ -222,7 +223,7 @@ def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwarg
 
     if stream:
         try:
-            for ans in chat(dia, msg, True, **kwargs):
+            async for ans in chat(dia, msg, True, **kwargs):
                 ans = structure_answer(conv, ans, message_id, session_id)
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans},
                                            ensure_ascii=False) + "\n\n"
@@ -235,7 +236,7 @@ def iframe_completion(dialog_id, question, session_id=None, stream=True, **kwarg
 
     else:
         answer = None
-        for ans in chat(dia, msg, False, **kwargs):
+        async for ans in chat(dia, msg, False, **kwargs):
             answer = structure_answer(conv, ans, message_id, session_id)
             API4ConversationService.append_message(conv.id, conv.to_dict())
             break

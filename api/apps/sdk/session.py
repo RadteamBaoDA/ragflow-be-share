@@ -131,7 +131,11 @@ async def chat_completion(tenant_id, chat_id):
         if not ConversationService.query(id=req["session_id"], dialog_id=chat_id):
             return get_error_data_result(f"You don't own the session {req['session_id']}")
     if req.get("stream", True):
-        resp = Response(rag_completion(tenant_id, chat_id, **req), mimetype="text/event-stream")
+        async def generator():
+            async for chunk in rag_completion(tenant_id, chat_id, **req):
+                yield chunk
+
+        resp = Response(generator(), mimetype="text/event-stream")
         resp.headers.add_header("Cache-control", "no-cache")
         resp.headers.add_header("Connection", "keep-alive")
         resp.headers.add_header("X-Accel-Buffering", "no")
@@ -140,7 +144,7 @@ async def chat_completion(tenant_id, chat_id):
         return resp
     else:
         answer = None
-        for ans in rag_completion(tenant_id, chat_id, **req):
+        async for ans in rag_completion(tenant_id, chat_id, **req):
             answer = ans
             break
         return get_result(data=answer)

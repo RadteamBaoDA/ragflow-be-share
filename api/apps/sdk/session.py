@@ -140,7 +140,7 @@ async def chat_completion(tenant_id, chat_id):
         return resp
     else:
         answer = None
-        for ans in rag_completion(tenant_id, chat_id, **req):
+        async for ans in rag_completion(tenant_id, chat_id, **req):
             answer = ans
             break
         return get_result(data=answer)
@@ -244,7 +244,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
         # The value for the usage field on all chunks except for the last one will be null.
         # The usage field on the last chunk contains token usage statistics for the entire request.
         # The choices field on the last chunk will always be an empty array [].
-        def streamed_response_generator(chat_id, dia, msg):
+        async def streamed_response_generator(chat_id, dia, msg):
             token_used = 0
             answer_cache = ""
             reasoning_cache = ""
@@ -273,7 +273,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
             }
 
             try:
-                for ans in chat(dia, msg, True, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
+                async for ans in chat(dia, msg, True, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
                     last_ans = ans
                     answer = ans["answer"]
 
@@ -341,7 +341,7 @@ async def chat_completion_openai_like(tenant_id, chat_id):
         return resp
     else:
         answer = None
-        for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
+        async for ans in chat(dia, msg, False, toolcall_session=toolcall_session, tools=tools, quote=need_reference):
             # focus answer content only
             answer = ans
             break
@@ -734,10 +734,10 @@ async def ask_about(tenant_id):
             return get_error_data_result(f"The dataset {kb_id} doesn't own parsed file")
     uid = tenant_id
 
-    def stream():
+    async def stream():
         nonlocal req, uid
         try:
-            for ans in ask(req["question"], req["kb_ids"], uid):
+            async for ans in ask(req["question"], req["kb_ids"], uid):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
             yield "data:" + json.dumps(
@@ -789,7 +789,7 @@ Reason:
  - At the same time, related terms can also help search engines better understand user needs and return more accurate search results.
 
 """
-    ans = chat_mdl.chat(
+    ans = await chat_mdl.achat(
         prompt,
         [
             {
@@ -828,8 +828,11 @@ async def chatbot_completions(dialog_id):
         resp.headers.add_header("Content-Type", "text/event-stream; charset=utf-8")
         return resp
 
-    for answer in iframe_completion(dialog_id, **req):
-        return get_result(data=answer)
+    answer = None
+    async for ans in iframe_completion(dialog_id, **req):
+        answer = ans
+        break
+    return get_result(data=answer)
 
 
 @manager.route("/chatbots/<dialog_id>/info", methods=["GET"])  # noqa: F821
@@ -919,10 +922,10 @@ async def ask_about_embedded():
         if search_app := SearchService.get_detail(search_id):
             search_config = search_app.get("search_config", {})
 
-    def stream():
+    async def stream():
         nonlocal req, uid
         try:
-            for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
+            async for ans in ask(req["question"], req["kb_ids"], uid, search_config=search_config):
                 yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
         except Exception as e:
             yield "data:" + json.dumps(
@@ -1066,7 +1069,7 @@ async def related_questions_embedded():
 
     gen_conf = search_config.get("llm_setting", {"temperature": 0.9})
     prompt = load_prompt("related_question")
-    ans = chat_mdl.chat(
+    ans = await chat_mdl.achat(
         prompt,
         [
             {

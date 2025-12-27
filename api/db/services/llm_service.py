@@ -227,6 +227,7 @@ class LLMBundle(LLM4Tenant):
             return kwargs
         else:
             return {k: v for k, v in kwargs.items() if k in allowed_params}
+
     def chat(self, system: str, history: list, gen_conf: dict = {}, **kwargs) -> str:
         if self.langfuse:
             generation = self.langfuse.start_generation(trace_context=self.trace_context, name="chat", model=self.llm_name, input={"system": system, "history": history})
@@ -279,5 +280,93 @@ class LLMBundle(LLM4Tenant):
             yield ans
 
         if total_tokens > 0:
-            if not TenantLLMService.increase_usage(self.tenant_id, self.llm_type, txt, self.llm_name):
+            if not TenantLLMService.increase_usage(self.tenant_id, self.llm_type, total_tokens, self.llm_name):
                 logging.error("LLMBundle.chat_streamly can't update token usage for {}/CHAT llm_name: {}, content: {}".format(self.tenant_id, self.llm_name, txt))
+
+    async def achat(self, system: str, history: list, gen_conf: dict = {}, **kwargs) -> str:
+        if self.langfuse:
+            generation = self.langfuse.start_generation(trace_context=self.trace_context, name="achat", model=self.llm_name, input={"system": system, "history": history})
+
+        if not hasattr(self.mdl, 'achat'):
+             raise NotImplementedError(f"Model {self.llm_name} does not support async chat.")
+
+        chat_func = self.mdl.achat
+        if self.is_tools and self.mdl.is_tools and hasattr(self.mdl, 'achat_with_tools'):
+             chat_func = self.mdl.achat_with_tools
+
+        func = chat_func
+        sig = inspect.signature(func)
+        support_var_args = False
+        allowed_params = set()
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                support_var_args = True
+            elif param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+                allowed_params.add(param.name)
+
+        use_kwargs = kwargs
+        if not support_var_args:
+             use_kwargs = {k: v for k, v in kwargs.items() if k in allowed_params}
+
+        txt, used_tokens = await chat_func(system, history, gen_conf, **use_kwargs)
+
+        txt = self._remove_reasoning_content(txt)
+        if not self.verbose_tool_use:
+            txt = re.sub(r"<tool_call>.*?</tool_call>", "", txt, flags=re.DOTALL)
+
+        if not TenantLLMService.increase_usage(self.tenant_id, self.llm_type, used_tokens, self.llm_name):
+            logging.error("LLMBundle.achat can't update token usage for {}/CHAT llm_name: {}, used_tokens: {}".format(self.tenant_id, self.llm_name, used_tokens))
+
+        if self.langfuse:
+            generation.update(output={"output": txt}, usage_details={"total_tokens": used_tokens})
+            generation.end()
+
+        return txt
+
+    async def achat_streamly(self, system: str, history: list, gen_conf: dict = {}, **kwargs):
+        if self.langfuse:
+             generation = self.langfuse.start_generation(trace_context=self.trace_context, name="achat_streamly", model=self.llm_name, input={"system": system, "history": history})
+
+        if not hasattr(self.mdl, 'achat_streamly'):
+             raise NotImplementedError(f"Model {self.llm_name} does not support async stream chat.")
+
+        chat_func = self.mdl.achat_streamly
+        if self.is_tools and self.mdl.is_tools and hasattr(self.mdl, 'achat_streamly_with_tools'):
+             chat_func = self.mdl.achat_streamly_with_tools
+
+        func = chat_func
+        sig = inspect.signature(func)
+        support_var_args = False
+        allowed_params = set()
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                support_var_args = True
+            elif param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+                allowed_params.add(param.name)
+
+        use_kwargs = kwargs
+        if not support_var_args:
+             use_kwargs = {k: v for k, v in kwargs.items() if k in allowed_params}
+
+        ans = ""
+        total_tokens = 0
+        async for txt in chat_func(system, history, gen_conf, **use_kwargs):
+            if isinstance(txt, int):
+                total_tokens = txt
+                if self.langfuse:
+                    generation.update(output={"output": ans})
+                    generation.end()
+                break
+
+            if txt.endswith("</think>"):
+                ans = ans[: -len("</think>")]
+
+            if not self.verbose_tool_use:
+                txt = re.sub(r"<tool_call>.*?</tool_call>", "", txt, flags=re.DOTALL)
+
+            ans += txt
+            yield ans
+
+        if total_tokens > 0:
+            if not TenantLLMService.increase_usage(self.tenant_id, self.llm_type, total_tokens, self.llm_name):
+                logging.error("LLMBundle.achat_streamly can't update token usage for {}/CHAT llm_name: {}, used_tokens: {}".format(self.tenant_id, self.llm_name, total_tokens))

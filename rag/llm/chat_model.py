@@ -19,6 +19,7 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from abc import ABC
 from copy import deepcopy
@@ -466,6 +467,56 @@ class Base(ABC):
             yield ans + "\n**ERROR**: " + str(e)
 
         yield total_tokens
+
+    async def async_chat(self, system, history, gen_conf={}, **kwargs):
+        return await asyncio.to_thread(self.chat, system, history, gen_conf, **kwargs)
+
+    async def async_chat_streamly(self, system, history, gen_conf={}, **kwargs):
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+
+        def producer():
+            try:
+                for item in self.chat_streamly(system, history, gen_conf, **kwargs):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+
+        threading.Thread(target=producer).start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+    async def async_chat_with_tools(self, system, history, gen_conf):
+        return await asyncio.to_thread(self.chat_with_tools, system, history, gen_conf)
+
+    async def async_chat_streamly_with_tools(self, system, history, gen_conf):
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+
+        def producer():
+            try:
+                for item in self.chat_streamly_with_tools(system, history, gen_conf):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+
+        threading.Thread(target=producer).start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     def _calculate_dynamic_ctx(self, history):
         """Calculate dynamic context window size"""
@@ -1874,6 +1925,56 @@ class LiteLLMBase(ABC):
             yield ans + "\n**ERROR**: " + str(e)
 
         yield total_tokens
+
+    async def async_chat(self, system, history, gen_conf={}, **kwargs):
+        return await asyncio.to_thread(self.chat, system, history, gen_conf, **kwargs)
+
+    async def async_chat_streamly(self, system, history, gen_conf={}, **kwargs):
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+
+        def producer():
+            try:
+                for item in self.chat_streamly(system, history, gen_conf, **kwargs):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+
+        threading.Thread(target=producer).start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+    async def async_chat_with_tools(self, system, history, gen_conf):
+        return await asyncio.to_thread(self.chat_with_tools, system, history, gen_conf)
+
+    async def async_chat_streamly_with_tools(self, system, history, gen_conf):
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+
+        def producer():
+            try:
+                for item in self.chat_streamly_with_tools(system, history, gen_conf):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+
+        threading.Thread(target=producer).start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     def _calculate_dynamic_ctx(self, history):
         """Calculate dynamic context window size"""

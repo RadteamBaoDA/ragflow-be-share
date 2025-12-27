@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import binascii
 import logging
 import re
@@ -208,6 +209,37 @@ def chat_solo(dialog, messages, stream=True):
         yield {"answer": answer, "reference": {}, "audio_binary": tts(tts_mdl, answer), "prompt": "", "created_at": time.time()}
 
 
+async def async_chat_solo(dialog, messages, stream=True):
+    if TenantLLMService.llm_id2llm_type(dialog.llm_id) == "image2text":
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id)
+    else:
+        chat_mdl = LLMBundle(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
+
+    prompt_config = dialog.prompt_config
+    tts_mdl = None
+    if prompt_config.get("tts"):
+        tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS)
+    msg = [{"role": m["role"], "content": re.sub(r"##\d+\$\$", "", m["content"])} for m in messages if m["role"] != "system"]
+    if stream:
+        last_ans = ""
+        delta_ans = ""
+        async for ans in chat_mdl.async_chat_streamly(prompt_config.get("system", ""), msg, dialog.llm_setting):
+            answer = ans
+            delta_ans = ans[len(last_ans):]
+            if num_tokens_from_string(delta_ans) < 16:
+                continue
+            last_ans = answer
+            yield {"answer": answer, "reference": {}, "audio_binary": await async_tts(tts_mdl, delta_ans), "prompt": "", "created_at": time.time()}
+            delta_ans = ""
+        if delta_ans:
+            yield {"answer": answer, "reference": {}, "audio_binary": await async_tts(tts_mdl, delta_ans), "prompt": "", "created_at": time.time()}
+    else:
+        answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting)
+        user_content = msg[-1].get("content", "[content not available]")
+        logging.debug("User: {}|Assistant: {}".format(user_content, answer))
+        yield {"answer": answer, "reference": {}, "audio_binary": await async_tts(tts_mdl, answer), "prompt": "", "created_at": time.time()}
+
+
 def get_models(dialog):
     embd_mdl, chat_mdl, rerank_mdl, tts_mdl = None, None, None, None
     kbs = KnowledgebaseService.get_by_ids(dialog.kb_ids)
@@ -337,12 +369,12 @@ def meta_filter(metas: dict, filters: list[dict]):
     return list(doc_ids)
 
 
-def chat(dialog, messages, stream=True, **kwargs):
+async def chat(dialog, messages, stream=True, **kwargs):
     assert messages[-1]["role"] == "user", "The last content of this conversation is not from user."
     if not dialog.kb_ids and not dialog.prompt_config.get("tavily_api_key"):
-        for ans in chat_solo(dialog, messages, stream):
+        async for ans in async_chat_solo(dialog, messages, stream):
             yield ans
-        return None
+        return
 
     chat_start_ts = timer()
 
@@ -386,7 +418,7 @@ def chat(dialog, messages, stream=True, **kwargs):
         ans = use_sql(questions[-1], field_map, dialog.tenant_id, chat_mdl, prompt_config.get("quote", True), dialog.kb_ids)
         if ans:
             yield ans
-            return None
+            return
 
     for p in prompt_config["parameters"]:
         if p["key"] == "knowledge":
@@ -491,8 +523,8 @@ def chat(dialog, messages, stream=True, **kwargs):
     if not knowledges and prompt_config.get("empty_response"):
         empty_res = prompt_config["empty_response"]
         yield {"answer": empty_res, "reference": kbinfos, "prompt": "\n\n### Query:\n%s" % " ".join(questions),
-               "audio_binary": tts(tts_mdl, empty_res)}
-        return {"answer": prompt_config["empty_response"], "reference": kbinfos}
+               "audio_binary": await async_tts(tts_mdl, empty_res)}
+        return
 
     kwargs["knowledge"] = "\n------\n" + "\n\n------\n\n".join(knowledges)
     gen_conf = dialog.llm_setting
@@ -596,7 +628,7 @@ def chat(dialog, messages, stream=True, **kwargs):
     if stream:
         last_ans = ""
         answer = ""
-        for ans in chat_mdl.chat_streamly(prompt + prompt4citation, msg[1:], gen_conf):
+        async for ans in chat_mdl.async_chat_streamly(prompt + prompt4citation, msg[1:], gen_conf):
             if thought:
                 ans = re.sub(r"^.*</think>", "", ans, flags=re.DOTALL)
             answer = ans
@@ -604,20 +636,20 @@ def chat(dialog, messages, stream=True, **kwargs):
             if num_tokens_from_string(delta_ans) < 16:
                 continue
             last_ans = answer
-            yield {"answer": thought + answer, "reference": {}, "audio_binary": tts(tts_mdl, delta_ans)}
+            yield {"answer": thought + answer, "reference": {}, "audio_binary": await async_tts(tts_mdl, delta_ans)}
         delta_ans = answer[len(last_ans):]
         if delta_ans:
-            yield {"answer": thought + answer, "reference": {}, "audio_binary": tts(tts_mdl, delta_ans)}
+            yield {"answer": thought + answer, "reference": {}, "audio_binary": await async_tts(tts_mdl, delta_ans)}
         yield decorate_answer(thought + answer)
     else:
-        answer = chat_mdl.chat(prompt + prompt4citation, msg[1:], gen_conf)
+        answer = await chat_mdl.async_chat(prompt + prompt4citation, msg[1:], gen_conf)
         user_content = msg[-1].get("content", "[content not available]")
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
         res = decorate_answer(answer)
-        res["audio_binary"] = tts(tts_mdl, answer)
+        res["audio_binary"] = await async_tts(tts_mdl, answer)
         yield res
 
-    return None
+    return
 
 
 def use_sql(question, field_map, tenant_id, chat_mdl, quota=True, kb_ids=None):
@@ -752,6 +784,10 @@ def tts(tts_mdl, text):
     for chunk in tts_mdl.tts(text):
         bin += chunk
     return binascii.hexlify(bin).decode("utf-8")
+
+
+async def async_tts(tts_mdl, text):
+    return await asyncio.to_thread(tts, tts_mdl, text)
 
 
 def ask(question, kb_ids, tenant_id, chat_llm_name=None, search_config={}):

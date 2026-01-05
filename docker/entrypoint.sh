@@ -13,6 +13,7 @@ function usage() {
     echo "  --disable-datasync              Disables synchronization of datasource workers."
     echo "  --enable-mcpserver              Enables the MCP server."
     echo "  --enable-adminserver            Enables the Admin server."
+    echo "  --init-superuser                Initializes the superuser."
     echo "  --consumer-no-beg=<num>         Start range for consumers (if using range-based)."
     echo "  --consumer-no-end=<num>         End range for consumers (if using range-based)."
     echo "  --workers=<num>                 Number of task executors to run (if range is not used)."
@@ -24,6 +25,7 @@ function usage() {
     echo "  $0 --disable-webserver --workers=2 --host-id=myhost123"
     echo "  $0 --enable-mcpserver"
     echo "  $0 --enable-adminserver"
+    echo "  $0 --init-superuser"
     exit 1
 }
 
@@ -32,6 +34,7 @@ ENABLE_TASKEXECUTOR=1  # Default to enable task executor
 ENABLE_DATASYNC=1
 ENABLE_MCP_SERVER=0
 ENABLE_ADMIN_SERVER=0 # Default close admin server
+INIT_SUPERUSER_ARGS="" # Default to not initialize superuser
 CONSUMER_NO_BEG=0
 CONSUMER_NO_END=0
 WORKERS=1
@@ -81,6 +84,10 @@ for arg in "$@"; do
       ;;
     --enable-adminserver)
       ENABLE_ADMIN_SERVER=1
+      shift
+      ;;
+    --init-superuser)
+      INIT_SUPERUSER_ARGS="--init-superuser"
       shift
       ;;
     --mcp-host=*)
@@ -194,45 +201,10 @@ function ensure_docling() {
       || python3 -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple --no-cache-dir "docling${DOCLING_PIN}"
 }
 
-function ensure_mineru() {
-    [[ "${USE_MINERU}" == "true" ]] || { echo "[mineru] disabled by USE_MINERU"; return 0; }
-
-    export HUGGINGFACE_HUB_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-
-    local default_prefix="/ragflow/uv_tools"
-    local venv_dir="${default_prefix}/.venv"
-    local exe="${MINERU_EXECUTABLE:-${venv_dir}/bin/mineru}"
-
-    if [[ -x "${exe}" ]]; then
-      echo "[mineru] found: ${exe}"
-      export MINERU_EXECUTABLE="${exe}"
-      return 0
-    fi
-
-    echo "[mineru] not found, bootstrapping with uv ..."
-
-    (
-        set -e
-        mkdir -p "${default_prefix}"
-        cd "${default_prefix}"
-        [[ -d "${venv_dir}" ]] || uv venv "${venv_dir}"
-
-        source "${venv_dir}/bin/activate"
-        uv pip install -U "mineru[core]" -i https://mirrors.aliyun.com/pypi/simple --extra-index-url https://pypi.org/simple
-        deactivate
-    )
-    export MINERU_EXECUTABLE="${exe}"
-    if ! "${MINERU_EXECUTABLE}" --help >/dev/null 2>&1; then
-      echo "[mineru] installation failed: ${MINERU_EXECUTABLE} not working" >&2
-      return 1
-    fi
-    echo "[mineru] installed: ${MINERU_EXECUTABLE}"
-}
 # -----------------------------------------------------------------------------
 # Start components based on flags
 # -----------------------------------------------------------------------------
 ensure_docling
-ensure_mineru
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then
     echo "Starting nginx..."
@@ -240,7 +212,7 @@ if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then
 
     echo "Starting ragflow_server..."
     while true; do
-        "$PY" api/ragflow_server.py &
+        "$PY" api/ragflow_server.py ${INIT_SUPERUSER_ARGS} &
         wait;
         sleep 1;
     done &

@@ -22,7 +22,7 @@
         <img alt="Static Badge" src="https://img.shields.io/badge/Online-Demo-4e6b99">
     </a>
     <a href="https://hub.docker.com/r/infiniflow/ragflow" target="_blank">
-        <img src="https://img.shields.io/docker/pulls/infiniflow/ragflow?label=Docker%20Pulls&color=0db7ed&logo=docker&logoColor=white&style=flat-square" alt="docker pull infiniflow/ragflow:v0.22.1">
+        <img src="https://img.shields.io/docker/pulls/infiniflow/ragflow?label=Docker%20Pulls&color=0db7ed&logo=docker&logoColor=white&style=flat-square" alt="docker pull infiniflow/ragflow:v0.23.1">
     </a>
     <a href="https://github.com/infiniflow/ragflow/releases/latest">
         <img src="https://img.shields.io/github/v/release/infiniflow/ragflow?color=blue&label=Latest%20Release" alt="Latest Release">
@@ -37,7 +37,7 @@
 
 <h4 align="center">
   <a href="https://ragflow.io/docs/dev/">Document</a> |
-  <a href="https://github.com/infiniflow/ragflow/issues/4214">Roadmap</a> |
+  <a href="https://github.com/infiniflow/ragflow/issues/12241">Roadmap</a> |
   <a href="https://twitter.com/infiniflowai">Twitter</a> |
   <a href="https://discord.gg/NjYzJD3GM3">Discord</a> |
   <a href="https://demo.ragflow.io">Demo</a>
@@ -85,8 +85,9 @@ Try our demo at [https://demo.ragflow.io](https://demo.ragflow.io).
 
 ## 🔥 Latest Updates
 
+- 2025-12-26 Supports 'Memory' for AI agent.
 - 2025-11-19 Supports Gemini 3 Pro.
-- 2025-11-12 Supports data synchronization from Confluence, AWS S3, Discord, Google Drive.
+- 2025-11-12 Supports data synchronization from Confluence, S3, Notion, Discord, Google Drive.
 - 2025-10-23 Supports MinerU & Docling as document parsing methods.
 - 2025-10-15 Supports orchestrable ingestion pipeline.
 - 2025-08-08 Supports OpenAI's latest GPT-5 series models.
@@ -187,14 +188,14 @@ releases! 🌟
 > All Docker images are built for x86 platforms. We don't currently offer Docker images for ARM64.
 > If you are on an ARM64 platform, follow [this guide](https://ragflow.io/docs/dev/build_docker_image) to build a Docker image compatible with your system.
 
-> The command below downloads the `v0.22.1` edition of the RAGFlow Docker image. See the following table for descriptions of different RAGFlow editions. To download a RAGFlow edition different from `v0.22.1`, update the `RAGFLOW_IMAGE` variable accordingly in **docker/.env** before using `docker compose` to start the server.
+> The command below downloads the `v0.23.1` edition of the RAGFlow Docker image. See the following table for descriptions of different RAGFlow editions. To download a RAGFlow edition different from `v0.23.1`, update the `RAGFLOW_IMAGE` variable accordingly in **docker/.env** before using `docker compose` to start the server.
 
 ```bash
    $ cd ragflow/docker
   
-   # git checkout v0.22.1
+   # git checkout v0.23.1
    # Optional: use a stable tag (see releases: https://github.com/infiniflow/ragflow/releases)
-   # This steps ensures the **entrypoint.sh** file in the code matches the Docker image version.
+   # This step ensures the **entrypoint.sh** file in the code matches the Docker image version.
    
    # Use CPU for DeepDoc tasks:
    $ docker compose -f docker-compose.yml up -d
@@ -206,10 +207,10 @@ releases! 🌟
 
 > Note: Prior to `v0.22.0`, we provided both images with embedding models and slim images without embedding models. Details as follows:
 
-| RAGFlow image tag | Image size (GB) | Has embedding models? | Stable?                  |
-| ----------------- | --------------- | --------------------- | ------------------------ |
-| v0.21.1           | &approx;9       | ✔️                    | Stable release           |
-| v0.21.1-slim      | &approx;2       | ❌                    | Stable release           |
+| RAGFlow image tag | Image size (GB) | Has embedding models? | Stable?        |
+|-------------------|-----------------|-----------------------|----------------|
+| v0.21.1           | &approx;9       | ✔️                    | Stable release |
+| v0.21.1-slim      | &approx;2       | ❌                     | Stable release |
 
 > Starting with `v0.22.0`, we ship only the slim edition and no longer append the **-slim** suffix to the image tag.
 
@@ -232,7 +233,7 @@ releases! 🌟
     * Running on all addresses (0.0.0.0)
    ```
 
-   > If you skip this confirmation step and directly log in to RAGFlow, your browser may prompt a `network anormal`
+   > If you skip this confirmation step and directly log in to RAGFlow, your browser may prompt a `network abnormal`
    > error because, at that moment, your RAGFlow may not be fully initialized.
    >
 5. In your web browser, enter the IP address of your server and log in to RAGFlow.
@@ -302,6 +303,15 @@ cd ragflow/
 docker build --platform linux/amd64 -f Dockerfile -t infiniflow/ragflow:nightly .
 ```
 
+Or if you are behind a proxy, you can pass proxy arguments:
+
+```bash
+docker build --platform linux/amd64 \
+  --build-arg http_proxy=http://YOUR_PROXY:PORT \
+  --build-arg https_proxy=http://YOUR_PROXY:PORT \
+  -f Dockerfile -t infiniflow/ragflow:nightly .
+```
+
 ## 🔨 Launch service from source for development
 
 1. Install `uv` and `pre-commit`, or skip this step if they are already installed:
@@ -314,7 +324,7 @@ docker build --platform linux/amd64 -f Dockerfile -t infiniflow/ragflow:nightly 
    ```bash
    git clone https://github.com/infiniflow/ragflow.git
    cd ragflow/
-   uv sync --python 3.10 # install RAGFlow dependent python modules
+   uv sync --python 3.12 # install RAGFlow dependent python modules
    uv run download_deps.py
    pre-commit install
    ```
@@ -386,7 +396,7 @@ docker build --platform linux/amd64 -f Dockerfile -t infiniflow/ragflow:nightly 
 
 ## 📜 Roadmap
 
-See the [RAGFlow Roadmap 2025](https://github.com/infiniflow/ragflow/issues/4214)
+See the [RAGFlow Roadmap 2026](https://github.com/infiniflow/ragflow/issues/12241)
 
 ## 🏄 Community
 

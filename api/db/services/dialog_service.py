@@ -307,7 +307,13 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             trace_context = {"trace_id": trace_id}
 
     check_langfuse_tracer_ts = timer()
-    kbs, embd_mdl, rerank_mdl, chat_mdl, tts_mdl = get_models(dialog)
+    # Run blocking model loading in executor
+    loop = asyncio.get_event_loop()
+    kbs, embd_mdl, rerank_mdl, chat_mdl, tts_mdl = await loop.run_in_executor(
+        None,
+        get_models,
+        dialog
+    )
     toolcall_session, tools = kwargs.get("toolcall_session"), kwargs.get("tools")
     if toolcall_session and tools:
         chat_mdl.bind_tools(toolcall_session, tools)
@@ -323,7 +329,12 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         attachments_ = "\n\n".join(FileService.get_files(messages[-1]["files"]))
 
     prompt_config = dialog.prompt_config
-    field_map = KnowledgebaseService.get_field_map(dialog.kb_ids)
+    # Run blocking DB query in executor
+    field_map = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_field_map,
+        dialog.kb_ids
+    )
     # try to use sql if field mapping is good to go
     if field_map:
         logging.debug("Use SQL to retrieval:{}".format(questions[-1]))
@@ -349,7 +360,12 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], prompt_config["cross_languages"])]
 
     if dialog.meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(dialog.kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            dialog.kb_ids
+        )
         attachments = await apply_meta_data_filter(
             dialog.meta_data_filter,
             metas,
@@ -395,7 +411,10 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     yield think
         else:
             if embd_mdl:
-                kbinfos = retriever.retrieval(
+                # Run blocking vector search in executor
+                kbinfos = await loop.run_in_executor(
+                    None,
+                    retriever.retrieval,
                     " ".join(questions),
                     embd_mdl,
                     tenant_ids,
@@ -404,17 +423,23 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     dialog.top_n,
                     dialog.similarity_threshold,
                     dialog.vector_similarity_weight,
-                    doc_ids=attachments,
-                    top=dialog.top_k,
-                    aggs=True,
-                    rerank_mdl=rerank_mdl,
-                    rank_feature=label_question(" ".join(questions), kbs),
+                    attachments,
+                    dialog.top_k,
+                    True,
+                    rerank_mdl,
+                    label_question(" ".join(questions), kbs)
                 )
                 if prompt_config.get("toc_enhance"):
                     cks = retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)
                     if cks:
                         kbinfos["chunks"] = cks
-                kbinfos["chunks"] = retriever.retrieval_by_children(kbinfos["chunks"], tenant_ids)
+                # Run blocking operation in executor
+                kbinfos["chunks"] = await loop.run_in_executor(
+                    None,
+                    retriever.retrieval_by_children,
+                    kbinfos["chunks"],
+                    tenant_ids
+                )
             if prompt_config.get("tavily_api_key"):
                 tav = Tavily(prompt_config["tavily_api_key"])
                 tav_res = tav.retrieve_chunks(" ".join(questions))
@@ -741,7 +766,13 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
     rerank_id = search_config.get("rerank_id", "")
     meta_data_filter = search_config.get("meta_data_filter")
 
-    kbs = KnowledgebaseService.get_by_ids(kb_ids)
+    # Run blocking DB operations in executor
+    loop = asyncio.get_event_loop()
+    kbs = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_by_ids,
+        kb_ids
+    )
     embedding_list = list(set([kb.embd_id for kb in kbs]))
 
     is_knowledge_graph = all([kb.parser_id == ParserType.KG for kb in kbs])
@@ -755,23 +786,34 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
     tenant_ids = list(set([kb.tenant_id for kb in kbs]))
 
     if meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            kb_ids
+        )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    kbinfos = retriever.retrieval(
-        question=question,
-        embd_mdl=embd_mdl,
-        tenant_ids=tenant_ids,
-        kb_ids=kb_ids,
-        page=1,
-        page_size=12,
-        similarity_threshold=search_config.get("similarity_threshold", 0.1),
-        vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
-        top=search_config.get("top_k", 1024),
-        doc_ids=doc_ids,
-        aggs=True,
-        rerank_mdl=rerank_mdl,
-        rank_feature=label_question(question, kbs)
+    # Run blocking vector search in executor using partial for keyword args
+    from functools import partial
+    kbinfos = await loop.run_in_executor(
+        None,
+        partial(
+            retriever.retrieval,
+            question=question,
+            embd_mdl=embd_mdl,
+            tenant_ids=tenant_ids,
+            kb_ids=kb_ids,
+            page=1,
+            page_size=12,
+            similarity_threshold=search_config.get("similarity_threshold", 0.1),
+            vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
+            top=search_config.get("top_k", 1024),
+            doc_ids=doc_ids,
+            aggs=True,
+            rerank_mdl=rerank_mdl,
+            rank_feature=label_question(question, kbs)
+        )
     )
 
     knowledges = kb_prompt(kbinfos, max_tokens)
@@ -810,7 +852,14 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
     doc_ids = search_config.get("doc_ids", [])
     rerank_id = search_config.get("rerank_id", "")
     rerank_mdl = None
-    kbs = KnowledgebaseService.get_by_ids(kb_ids)
+    
+    # Run blocking DB operations in executor
+    loop = asyncio.get_event_loop()
+    kbs = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_by_ids,
+        kb_ids
+    )
     if not kbs:
         return {"error": "No KB selected"}
     embedding_list = list(set([kb.embd_id for kb in kbs]))
@@ -822,23 +871,34 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
         rerank_mdl = LLMBundle(tenant_id, LLMType.RERANK, rerank_id)
 
     if meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            kb_ids
+        )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    ranks = settings.retriever.retrieval(
-        question=question,
-        embd_mdl=embd_mdl,
-        tenant_ids=tenant_ids,
-        kb_ids=kb_ids,
-        page=1,
-        page_size=12,
-        similarity_threshold=search_config.get("similarity_threshold", 0.2),
-        vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
-        top=search_config.get("top_k", 1024),
-        doc_ids=doc_ids,
-        aggs=False,
-        rerank_mdl=rerank_mdl,
-        rank_feature=label_question(question, kbs),
+    # Run blocking vector search in executor using partial for keyword args
+    from functools import partial
+    ranks = await loop.run_in_executor(
+        None,
+        partial(
+            settings.retriever.retrieval,
+            question=question,
+            embd_mdl=embd_mdl,
+            tenant_ids=tenant_ids,
+            kb_ids=kb_ids,
+            page=1,
+            page_size=12,
+            similarity_threshold=search_config.get("similarity_threshold", 0.2),
+            vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
+            top=search_config.get("top_k", 1024),
+            doc_ids=doc_ids,
+            aggs=False,
+            rerank_mdl=rerank_mdl,
+            rank_feature=label_question(question, kbs)
+        )
     )
     mindmap = MindMapExtractor(chat_mdl)
     mind_map = await mindmap([c["content_with_weight"] for c in ranks["chunks"]])

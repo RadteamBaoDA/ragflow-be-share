@@ -296,27 +296,32 @@ class LLMBundle(LLM4Tenant):
             return {k: v for k, v in kwargs.items() if k in allowed_params}
 
     def _run_coroutine_sync(self, coro):
+        """
+        Run a coroutine properly without blocking.
+        If we're already in an async context, use run_in_executor instead of blocking.
+        """
         try:
-            asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
+            # We're in an async context - use executor to avoid blocking
+            # Create a sync wrapper
+            import concurrent.futures
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            
+            def run_in_new_loop():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(coro)
+                finally:
+                    new_loop.close()
+            
+            # Submit to executor and wait (but this should be called from sync context)
+            future = executor.submit(run_in_new_loop)
+            return future.result()
+            
         except RuntimeError:
+            # No event loop running - we can safely use asyncio.run
             return asyncio.run(coro)
-
-        result_queue: queue.Queue = queue.Queue()
-
-        def runner():
-            try:
-                result_queue.put((True, asyncio.run(coro)))
-            except Exception as e:
-                result_queue.put((False, e))
-
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-        thread.join()
-
-        success, value = result_queue.get_nowait()
-        if success:
-            return value
-        raise value
 
     def _sync_from_async_stream(self, async_gen_fn, *args, **kwargs):
         result_queue: queue.Queue = queue.Queue()

@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import binascii
 import logging
 import re
@@ -422,10 +423,10 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     similarity_threshold=dialog.similarity_threshold,
                     vector_similarity_weight=dialog.vector_similarity_weight,
                     top=1024,
-                    doc_ids=doc_ids,
+                    doc_ids=attachments,
                     aggs=True,
                     rerank_mdl=rerank_mdl,
-                    rank_feature=rank_feature
+                    rank_feature=label_question(" ".join(questions), kbs)
                 )
                 if prompt_config.get("toc_enhance"):
                     cks = retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)

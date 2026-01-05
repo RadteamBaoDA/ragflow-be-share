@@ -353,6 +353,44 @@ class Dealer:
         rank_fea = self._rank_feature_scores(rank_feature, sres)
 
         return tkweight * np.array(tksim) + vtweight * vtsim + rank_fea, tksim, vtsim
+    
+    async def async_rerank_by_model(self, rerank_mdl, sres, query, tkweight=0.3,
+                                    vtweight=0.7, cfield="content_ltks",
+                                    rank_feature: dict | None = None):
+        """Async version of rerank_by_model using async_similarity when available"""
+        _, keywords = self.qryr.question(query)
+
+        for i in sres.ids:
+            if isinstance(sres.field[i].get("important_kwd", []), str):
+                sres.field[i]["important_kwd"] = [sres.field[i]["important_kwd"]]
+        ins_tw = []
+        for i in sres.ids:
+            content_ltks = sres.field[i][cfield].split()
+            title_tks = [t for t in sres.field[i].get("title_tks", "").split() if t]
+            important_kwd = sres.field[i].get("important_kwd", [])
+            tks = content_ltks + title_tks + important_kwd
+            ins_tw.append(tks)
+
+        tksim = self.qryr.token_similarity(keywords, ins_tw)
+        
+        # Use async similarity if available, otherwise fall back to sync in executor
+        if hasattr(rerank_mdl, 'async_similarity'):
+            vtsim, _ = await rerank_mdl.async_similarity(query, [remove_redundant_spaces(" ".join(tks)) for tks in ins_tw])
+        else:
+            import asyncio
+            from functools import partial
+            loop = asyncio.get_event_loop()
+            vtsim, _ = await loop.run_in_executor(
+                None,
+                rerank_mdl.similarity,
+                query,
+                [remove_redundant_spaces(" ".join(tks)) for tks in ins_tw]
+            )
+        
+        ## For rank feature(tag_fea) scores.
+        rank_fea = self._rank_feature_scores(rank_feature, sres)
+
+        return tkweight * np.array(tksim) + vtweight * vtsim + rank_fea, tksim, vtsim
 
     def hybrid_similarity(self, ans_embd, ins_embd, ans, inst):
         return self.qryr.hybrid_similarity(ans_embd,
@@ -651,7 +689,169 @@ class Dealer:
             chunks.append(d)
 
         return sorted(chunks, key=lambda x: x["similarity"] * -1)[:topn]
+    async def async_retrieval(
+            self,
+            question,
+            embd_mdl,
+            tenant_ids,
+            kb_ids,
+            page,
+            page_size,
+            similarity_threshold=0.2,
+            vector_similarity_weight=0.3,
+            top=1024,
+            doc_ids=None,
+            aggs=True,
+            rerank_mdl=None,
+            highlight=False,
+            rank_feature: dict | None = {PAGERANK_FLD: 10},
+    ):
+        """Async version of retrieval() that uses async_rerank_by_model for truly non-blocking reranking"""
+        ranks = {"total": 0, "chunks": [], "doc_aggs": {}}
+        if not question:
+            return ranks
 
+        # Ensure RERANK_LIMIT is multiple of page_size
+        RERANK_LIMIT = math.ceil(64 / page_size) * page_size if page_size > 1 else 1
+        req = {
+            "kb_ids": kb_ids,
+            "doc_ids": doc_ids,
+            "page": math.ceil(page_size * page / RERANK_LIMIT),
+            "size": RERANK_LIMIT,
+            "question": question,
+            "vector": True,
+            "topk": top,
+            "similarity": similarity_threshold,
+            "available_int": 1,
+        }
+
+        if isinstance(tenant_ids, str):
+            tenant_ids = tenant_ids.split(",")
+
+        # Vector search still needs executor (ElasticSearch is synchronous)
+        loop = asyncio.get_event_loop()
+        from functools import partial
+        sres = await loop.run_in_executor(
+            None,
+            partial(
+                self.search,
+                req,
+                [index_name(tid) for tid in tenant_ids],
+                kb_ids,
+                embd_mdl,
+                highlight,
+                rank_feature=rank_feature
+            )
+        )
+
+        # Reranking can now be truly async using async_rerank_by_model
+        if rerank_mdl and sres.total > 0:
+            sim, tsim, vsim = await self.async_rerank_by_model(
+                rerank_mdl,
+                sres,
+                question,
+                1 - vector_similarity_weight,
+                vector_similarity_weight,
+                rank_feature=rank_feature,
+            )
+        else:
+            if settings.DOC_ENGINE_INFINITY:
+                # Don't need rerank here since Infinity normalizes each way score before fusion.
+                sim = [sres.field[id].get("_score", 0.0) for id in sres.ids]
+                sim = [s if s is not None else 0.0 for s in sim]
+                tsim = sim
+                vsim = sim
+            else:
+                # ElasticSearch doesn't normalize each way score before fusion.
+                sim, tsim, vsim = self.rerank(
+                    sres,
+                    question,
+                    1 - vector_similarity_weight,
+                    vector_similarity_weight,
+                    rank_feature=rank_feature,
+                )
+
+        sim_np = np.array(sim, dtype=np.float64)
+        if sim_np.size == 0:
+            ranks["doc_aggs"] = []
+            return ranks
+
+        sorted_idx = np.argsort(sim_np * -1)
+
+        valid_idx = [int(i) for i in sorted_idx if sim_np[i] >= similarity_threshold]
+        filtered_count = len(valid_idx)
+        ranks["total"] = int(filtered_count)
+
+        if filtered_count == 0:
+            ranks["doc_aggs"] = []
+            return ranks
+
+        max_pages = max(RERANK_LIMIT // max(page_size, 1), 1)
+        page_index = (page - 1) % max_pages
+        begin = page_index * page_size
+        end = begin + page_size
+        page_idx = valid_idx[begin:end]
+
+        dim = len(sres.query_vector)
+        vector_column = f"q_{dim}_vec"
+        zero_vector = [0.0] * dim
+
+        for i in page_idx:
+            id = sres.ids[i]
+            chunk = sres.field[id]
+            dnm = chunk.get("docnm_kwd", "")
+            did = chunk.get("doc_id", "")
+
+            position_int = chunk.get("position_int", [])
+            d = {
+                "chunk_id": id,
+                "content_ltks": chunk["content_ltks"],
+                "content_with_weight": chunk["content_with_weight"],
+                "doc_id": did,
+                "docnm_kwd": dnm,
+                "kb_id": chunk["kb_id"],
+                "important_kwd": chunk.get("important_kwd", []),
+                "image_id": chunk.get("img_id", ""),
+                "similarity": float(sim_np[i]),
+                "vector_similarity": float(vsim[i]),
+                "term_similarity": float(tsim[i]),
+                "vector": chunk.get(vector_column, zero_vector),
+                "positions": position_int,
+                "doc_type_kwd": chunk.get("doc_type_kwd", ""),
+                "mom_id": chunk.get("mom_id", ""),
+            }
+            if highlight and sres.highlight:
+                if id in sres.highlight:
+                    d["highlight"] = remove_redundant_spaces(sres.highlight[id])
+                else:
+                    d["highlight"] = d["content_with_weight"]
+            ranks["chunks"].append(d)
+
+        if aggs:
+            for i in valid_idx:
+                id = sres.ids[i]
+                chunk = sres.field[id]
+                dnm = chunk.get("docnm_kwd", "")
+                did = chunk.get("doc_id", "")
+                if dnm not in ranks["doc_aggs"]:
+                    ranks["doc_aggs"][dnm] = {"doc_id": did, "count": 0}
+                ranks["doc_aggs"][dnm]["count"] += 1
+
+            ranks["doc_aggs"] = [
+                {
+                    "doc_name": k,
+                    "doc_id": v["doc_id"],
+                    "count": v["count"],
+                }
+                for k, v in sorted(
+                    ranks["doc_aggs"].items(),
+                    key=lambda x: x[1]["count"] * -1,
+                )
+            ]
+        else:
+            ranks["doc_aggs"] = []
+
+        return ranks
     def retrieval_by_children(self, chunks: list[dict], tenant_ids: list[str]):
         if not chunks:
             return []

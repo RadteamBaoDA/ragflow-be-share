@@ -44,11 +44,27 @@ class JinaRerank(Base):
         self.base_url = "https://api.jina.ai/v1/rerank"
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
         self.model_name = model_name
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         texts = [truncate(t, 8196) for t in texts]
         data = {"model": self.model_name, "query": query, "documents": texts, "top_n": len(texts)}
         res = requests.post(self.base_url, headers=self.headers, json=data).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res["results"]:
+                rank[d["index"]] = d["relevance_score"]
+        except Exception as _e:
+            log_exception(_e, res)
+        return rank, total_token_count_from_response(res)
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        texts = [truncate(t, 8196) for t in texts]
+        data = {"model": self.model_name, "query": query, "documents": texts, "top_n": len(texts)}
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in res["results"]:
@@ -71,6 +87,8 @@ class XInferenceRerank(Base):
         self.headers = {"Content-Type": "application/json", "accept": "application/json"}
         if key and key != "x":
             self.headers["Authorization"] = f"Bearer {key}"
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         if len(texts) == 0:
@@ -81,6 +99,25 @@ class XInferenceRerank(Base):
             token_count += num_tokens_from_string(t)
         data = {"model": self.model_name, "query": query, "return_documents": "true", "return_len": "true", "documents": texts}
         res = requests.post(self.base_url, headers=self.headers, json=data).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res["results"]:
+                rank[d["index"]] = d["relevance_score"]
+        except Exception as _e:
+            log_exception(_e, res)
+        return rank, token_count
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        if len(texts) == 0:
+            return np.array([]), 0
+        pairs = [(query, truncate(t, 4096)) for t in texts]
+        token_count = 0
+        for _, t in pairs:
+            token_count += num_tokens_from_string(t)
+        data = {"model": self.model_name, "query": query, "return_documents": "true", "return_len": "true", "documents": texts}
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in res["results"]:
@@ -100,6 +137,8 @@ class LocalAIRerank(Base):
             self.base_url = base_url
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
         self.model_name = model_name.split("___")[0]
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         # noway to config Ragflow , use fix setting
@@ -114,6 +153,39 @@ class LocalAIRerank(Base):
         for t in texts:
             token_count += num_tokens_from_string(t)
         res = requests.post(self.base_url, headers=self.headers, json=data).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res["results"]:
+                rank[d["index"]] = d["relevance_score"]
+        except Exception as _e:
+            log_exception(_e, res)
+
+        # Normalize the rank values to the range 0 to 1
+        min_rank = np.min(rank)
+        max_rank = np.max(rank)
+
+        # Avoid division by zero if all ranks are identical
+        if not np.isclose(min_rank, max_rank, atol=1e-3):
+            rank = (rank - min_rank) / (max_rank - min_rank)
+        else:
+            rank = np.zeros_like(rank)
+
+        return rank, token_count
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        texts = [truncate(t, 500) for t in texts]
+        data = {
+            "model": self.model_name,
+            "query": query,
+            "documents": texts,
+            "top_n": len(texts),
+        }
+        token_count = 0
+        for t in texts:
+            token_count += num_tokens_from_string(t)
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in res["results"]:
@@ -154,6 +226,8 @@ class NvidiaRerank(Base):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {key}",
         }
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         token_count = num_tokens_from_string(query) + sum([num_tokens_from_string(t) for t in texts])
@@ -165,6 +239,26 @@ class NvidiaRerank(Base):
             "top_n": len(texts),
         }
         res = requests.post(self.base_url, headers=self.headers, json=data).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res["rankings"]:
+                rank[d["index"]] = d["logit"]
+        except Exception as _e:
+            log_exception(_e, res)
+        return rank, token_count
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        token_count = num_tokens_from_string(query) + sum([num_tokens_from_string(t) for t in texts])
+        data = {
+            "model": self.model_name,
+            "query": {"text": query},
+            "passages": [{"text": text} for text in texts],
+            "truncate": "END",
+            "top_n": len(texts),
+        }
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in res["rankings"]:
@@ -194,6 +288,8 @@ class OpenAI_APIRerank(Base):
             self.base_url = base_url
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
         self.model_name = model_name.split("___")[0]
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         # noway to config Ragflow , use fix setting
@@ -208,6 +304,39 @@ class OpenAI_APIRerank(Base):
         for t in texts:
             token_count += num_tokens_from_string(t)
         res = requests.post(self.base_url, headers=self.headers, json=data).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in res["results"]:
+                rank[d["index"]] = d["relevance_score"]
+        except Exception as _e:
+            log_exception(_e, res)
+
+        # Normalize the rank values to the range 0 to 1
+        min_rank = np.min(rank)
+        max_rank = np.max(rank)
+
+        # Avoid division by zero if all ranks are identical
+        if not np.isclose(min_rank, max_rank, atol=1e-3):
+            rank = (rank - min_rank) / (max_rank - min_rank)
+        else:
+            rank = np.zeros_like(rank)
+
+        return rank, token_count
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        texts = [truncate(t, 500) for t in texts]
+        data = {
+            "model": self.model_name,
+            "query": query,
+            "documents": texts,
+            "top_n": len(texts),
+        }
+        token_count = 0
+        for t in texts:
+            token_count += num_tokens_from_string(t)
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in res["results"]:
@@ -282,6 +411,8 @@ class SILICONFLOWRerank(Base):
             "content-type": "application/json",
             "authorization": f"Bearer {key}",
         }
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         payload = {
@@ -294,6 +425,30 @@ class SILICONFLOWRerank(Base):
             "overlap_tokens": 80,
         }
         response = requests.post(self.base_url, json=payload, headers=self.headers).json()
+        rank = np.zeros(len(texts), dtype=float)
+        try:
+            for d in response["results"]:
+                rank[d["index"]] = d["relevance_score"]
+        except Exception as _e:
+            log_exception(_e, response)
+        return (
+            rank,
+            total_token_count_from_response(response),
+        )
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        payload = {
+            "model": self.model_name,
+            "query": query,
+            "documents": texts,
+            "top_n": len(texts),
+            "return_documents": False,
+            "max_chunks_per_doc": 1024,
+            "overlap_tokens": 80,
+        }
+        response_obj = await self.async_client.post(self.base_url, json=payload, headers=self.headers)
+        response = response_obj.json()
         rank = np.zeros(len(texts), dtype=float)
         try:
             for d in response["results"]:
@@ -434,6 +589,8 @@ class GPUStackRerank(Base):
             "content-type": "application/json",
             "authorization": f"Bearer {key}",
         }
+        # Create async client for non-blocking HTTP
+        self.async_client = httpx.AsyncClient(timeout=30.0)
 
     def similarity(self, query: str, texts: list):
         payload = {
@@ -445,6 +602,39 @@ class GPUStackRerank(Base):
 
         try:
             response = requests.post(self.base_url, json=payload, headers=self.headers)
+            response.raise_for_status()
+            response_json = response.json()
+
+            rank = np.zeros(len(texts), dtype=float)
+
+            token_count = 0
+            for t in texts:
+                token_count += num_tokens_from_string(t)
+            try:
+                for result in response_json["results"]:
+                    rank[result["index"]] = result["relevance_score"]
+            except Exception as _e:
+                log_exception(_e, response)
+
+            return (
+                rank,
+                token_count,
+            )
+
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"Error calling GPUStackRerank model {self.model_name}: {e.response.status_code} - {e.response.text}")
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Async version using httpx for non-blocking HTTP"""
+        payload = {
+            "model": self.model_name,
+            "query": query,
+            "documents": texts,
+            "top_n": len(texts),
+        }
+
+        try:
+            response = await self.async_client.post(self.base_url, json=payload, headers=self.headers)
             response.raise_for_status()
             response_json = response.json()
 

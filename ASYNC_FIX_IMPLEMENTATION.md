@@ -55,7 +55,36 @@ kbinfos = await loop.run_in_executor(
 )
 ```
 
-### 3. LLM Service (`api/db/services/llm_service.py`)
+### 3. Conversation Service (`api/db/services/conversation_service.py`)
+
+**Fixed functions:**
+- `async_completion()` - Main chat completion with conversation management
+- `async_iframe_completion()` - Iframe/embedded chat completion
+
+**Key blocking operations wrapped:**
+- `DialogService.query()` - DB query to get dialog
+- `ConversationService.save()` - Create new conversation
+- `ConversationService.query()` - Get existing conversation
+- `ConversationService.update_by_id()` - Update conversation (2 locations)
+- `API4ConversationService.save()` - Save iframe conversation
+- `API4ConversationService.get_by_id()` - Get iframe conversation
+
+**Example:**
+```python
+# DB query - was blocking for 50-200ms
+loop = asyncio.get_event_loop()
+dia = await loop.run_in_executor(
+    None,
+    partial(
+        DialogService.query,
+        id=chat_id,
+        tenant_id=tenant_id,
+        status=StatusEnum.VALID.value
+    )
+)
+```
+
+### 4. LLM Service (`api/db/services/llm_service.py`)
 
 **Fixed:** `_run_coroutine_sync()` method
 
@@ -82,6 +111,65 @@ def _run_coroutine_sync(self, coro):
         
     except RuntimeError:
         return asyncio.run(coro)
+```
+
+### 5. Reranker Models (`rag/llm/rerank_model.py`)
+
+**Added:** Async reranking support for truly non-blocking HTTP calls
+
+**Updated classes:**
+- `JinaRerank` - Added `async_similarity()` method
+- `XInferenceRerank` - Added `async_similarity()` method
+- `LocalAIRerank` - Added `async_similarity()` method
+- `NvidiaRerank` - Added `async_similarity()` method
+
+**Benefits:**
+- HTTP calls no longer block threads (was 100-500ms per rerank)
+- Uses `httpx.AsyncClient` for true async I/O
+- Backward compatible - sync `similarity()` method still available
+
+**Example:**
+```python
+class JinaRerank(Base):
+    def __init__(self, key, model_name, base_url):
+        # ... existing code ...
+        # New: async client
+        self.async_client = httpx.AsyncClient(timeout=30.0)
+    
+    async def async_similarity(self, query: str, texts: list):
+        """Non-blocking async version"""
+        texts = [truncate(t, 8196) for t in texts]
+        data = {"model": self.model_name, "query": query, "documents": texts, "top_n": len(texts)}
+        # Non-blocking HTTP call
+        response = await self.async_client.post(self.base_url, headers=self.headers, json=data)
+        res = response.json()
+        # ... process result
+```
+
+### 6. Search/Retrieval (`rag/nlp/search.py`)
+
+**Added:** `async_rerank_by_model()` method
+
+**Benefits:**
+- Automatically uses async reranker when available
+- Falls back to sync in executor for backward compatibility
+- Enables truly non-blocking reranking during retrieval
+
+**Example:**
+```python
+async def async_rerank_by_model(self, rerank_mdl, sres, query, ...):
+    """Async version using async_similarity when available"""
+    # ... prepare data ...
+    
+    # Use async if available, otherwise use executor
+    if hasattr(rerank_mdl, 'async_similarity'):
+        vtsim, _ = await rerank_mdl.async_similarity(query, texts)
+    else:
+        loop = asyncio.get_event_loop()
+        vtsim, _ = await loop.run_in_executor(
+            None, rerank_mdl.similarity, query, texts
+        )
+    # ... process results
 ```
 
 ## Testing

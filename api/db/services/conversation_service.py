@@ -13,7 +13,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import time
+from functools import partial
 from uuid import uuid4
 from common.constants import StatusEnum
 from api.db.db_models import Conversation, DB
@@ -91,7 +93,16 @@ def structure_answer(conv, ans, message_id, session_id):
 
 async def async_completion(tenant_id, chat_id, question, name="New session", session_id=None, stream=True, **kwargs):
     assert name, "`name` can not be empty."
-    dia = DialogService.query(id=chat_id, tenant_id=tenant_id, status=StatusEnum.VALID.value)
+    loop = asyncio.get_event_loop()
+    dia = await loop.run_in_executor(
+        None,
+        partial(
+            DialogService.query,
+            id=chat_id,
+            tenant_id=tenant_id,
+            status=StatusEnum.VALID.value
+        )
+    )
     assert dia, "You do not own the chat."
 
     if not session_id:
@@ -103,7 +114,10 @@ async def async_completion(tenant_id, chat_id, question, name="New session", ses
             "message": [{"role": "assistant", "content": dia[0].prompt_config.get("prologue"), "created_at": time.time()}],
             "user_id": kwargs.get("user_id", "")
         }
-        ConversationService.save(**conv)
+        await loop.run_in_executor(
+            None,
+            partial(ConversationService.save, **conv)
+        )
         if stream:
             yield "data:" + json.dumps({"code": 0, "message": "",
                                         "data": {
@@ -127,7 +141,14 @@ async def async_completion(tenant_id, chat_id, question, name="New session", ses
             yield answer
             return
 
-    conv = ConversationService.query(id=session_id, dialog_id=chat_id)
+    conv = await loop.run_in_executor(
+        None,
+        partial(
+            ConversationService.query,
+            id=session_id,
+            dialog_id=chat_id
+        )
+    )
     if not conv:
         raise LookupError("Session does not exist")
 
@@ -160,7 +181,12 @@ async def async_completion(tenant_id, chat_id, question, name="New session", ses
             async for ans in async_chat(dia, msg, True, **kwargs):
                 ans = structure_answer(conv, ans, message_id, session_id)
                 yield "data:" + json.dumps({"code": 0, "data": ans}, ensure_ascii=False) + "\n\n"
-            ConversationService.update_by_id(conv.id, conv.to_dict())
+            await loop.run_in_executor(
+                None,
+                ConversationService.update_by_id,
+                conv.id,
+                conv.to_dict()
+            )
         except Exception as e:
             yield "data:" + json.dumps({"code": 500, "message": str(e),
                                         "data": {"answer": "**ERROR**: " + str(e), "reference": []}},
@@ -171,12 +197,22 @@ async def async_completion(tenant_id, chat_id, question, name="New session", ses
         answer = None
         async for ans in async_chat(dia, msg, False, **kwargs):
             answer = structure_answer(conv, ans, message_id, session_id)
-            ConversationService.update_by_id(conv.id, conv.to_dict())
+            await loop.run_in_executor(
+                None,
+                ConversationService.update_by_id,
+                conv.id,
+                conv.to_dict()
+            )
             break
         yield answer
 
 async def async_iframe_completion(dialog_id, question, session_id=None, stream=True, **kwargs):
-    e, dia = DialogService.get_by_id(dialog_id)
+    loop = asyncio.get_event_loop()
+    e, dia = await loop.run_in_executor(
+        None,
+        DialogService.get_by_id,
+        dialog_id
+    )
     assert e, "Dialog not found"
     if not session_id:
         session_id = get_uuid()
@@ -186,7 +222,10 @@ async def async_iframe_completion(dialog_id, question, session_id=None, stream=T
             "user_id": kwargs.get("user_id", ""),
             "message": [{"role": "assistant", "content": dia.prompt_config["prologue"], "created_at": time.time()}]
         }
-        API4ConversationService.save(**conv)
+        await loop.run_in_executor(
+            None,
+            partial(API4ConversationService.save, **conv)
+        )
         yield "data:" + json.dumps({"code": 0, "message": "",
                                     "data": {
                                         "answer": conv["message"][0]["content"],
@@ -200,7 +239,11 @@ async def async_iframe_completion(dialog_id, question, session_id=None, stream=T
         return
     else:
         session_id = session_id
-        e, conv = API4ConversationService.get_by_id(session_id)
+        e, conv = await loop.run_in_executor(
+            None,
+            API4ConversationService.get_by_id,
+            session_id
+        )
         assert e, "Session not found!"
 
     if not conv.message:

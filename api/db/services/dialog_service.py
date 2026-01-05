@@ -411,23 +411,21 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     yield think
         else:
             if embd_mdl:
-                # Run blocking vector search in executor
-                kbinfos = await loop.run_in_executor(
-                    None,
-                    retriever.retrieval,
-                    " ".join(questions),
-                    embd_mdl,
-                    tenant_ids,
-                    dialog.kb_ids,
-                    1,
-                    dialog.top_n,
-                    dialog.similarity_threshold,
-                    dialog.vector_similarity_weight,
-                    attachments,
-                    dialog.top_k,
-                    True,
-                    rerank_mdl,
-                    label_question(" ".join(questions), kbs)
+                # Call async_retrieval directly for truly async reranking
+                kbinfos = await retriever.async_retrieval(
+                    question=" ".join(questions),
+                    embd_mdl=embd_mdl,
+                    tenant_ids=tenant_ids,
+                    kb_ids=dialog.kb_ids,
+                    page=1,
+                    page_size=dialog.top_n,
+                    similarity_threshold=dialog.similarity_threshold,
+                    vector_similarity_weight=dialog.vector_similarity_weight,
+                    top=1024,
+                    doc_ids=doc_ids,
+                    aggs=True,
+                    rerank_mdl=rerank_mdl,
+                    rank_feature=rank_feature
                 )
                 if prompt_config.get("toc_enhance"):
                     cks = retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)
@@ -794,26 +792,21 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
         )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    # Run blocking vector search in executor using partial for keyword args
-    from functools import partial
-    kbinfos = await loop.run_in_executor(
-        None,
-        partial(
-            retriever.retrieval,
-            question=question,
-            embd_mdl=embd_mdl,
-            tenant_ids=tenant_ids,
-            kb_ids=kb_ids,
-            page=1,
-            page_size=12,
-            similarity_threshold=search_config.get("similarity_threshold", 0.1),
-            vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
-            top=search_config.get("top_k", 1024),
-            doc_ids=doc_ids,
-            aggs=True,
-            rerank_mdl=rerank_mdl,
-            rank_feature=label_question(question, kbs)
-        )
+    # Call async_retrieval directly for truly async reranking
+    kbinfos = await retriever.async_retrieval(
+        question=question,
+        embd_mdl=embd_mdl,
+        tenant_ids=tenant_ids,
+        kb_ids=kb_ids,
+        page=1,
+        page_size=12,
+        similarity_threshold=search_config.get("similarity_threshold", 0.1),
+        vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
+        top=search_config.get("top_k", 1024),
+        doc_ids=doc_ids,
+        aggs=True,
+        rerank_mdl=rerank_mdl,
+        rank_feature=label_question(question, kbs)
     )
 
     knowledges = kb_prompt(kbinfos, max_tokens)
@@ -879,26 +872,21 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
         )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    # Run blocking vector search in executor using partial for keyword args
-    from functools import partial
-    ranks = await loop.run_in_executor(
-        None,
-        partial(
-            settings.retriever.retrieval,
-            question=question,
-            embd_mdl=embd_mdl,
-            tenant_ids=tenant_ids,
-            kb_ids=kb_ids,
-            page=1,
-            page_size=12,
-            similarity_threshold=search_config.get("similarity_threshold", 0.2),
-            vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
-            top=search_config.get("top_k", 1024),
-            doc_ids=doc_ids,
-            aggs=False,
-            rerank_mdl=rerank_mdl,
-            rank_feature=label_question(question, kbs)
-        )
+    # Call async_retrieval directly for truly async reranking
+    ranks = await settings.retriever.async_retrieval(
+        question=question,
+        embd_mdl=embd_mdl,
+        tenant_ids=tenant_ids,
+        kb_ids=kb_ids,
+        page=1,
+        page_size=12,
+        similarity_threshold=search_config.get("similarity_threshold", 0.2),
+        vector_similarity_weight=search_config.get("vector_similarity_weight", 0.3),
+        top=search_config.get("top_k", 1024),
+        doc_ids=doc_ids,
+        aggs=False,
+        rerank_mdl=rerank_mdl,
+        rank_feature=label_question(question, kbs)
     )
     mindmap = MindMapExtractor(chat_mdl)
     mind_map = await mindmap([c["content_with_weight"] for c in ranks["chunks"]])

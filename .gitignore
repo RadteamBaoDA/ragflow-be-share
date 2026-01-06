@@ -198,4 +198,4 @@ backup
 
 
 .hypothesis
-docker/docker-compose.yml
+docker/*.yml

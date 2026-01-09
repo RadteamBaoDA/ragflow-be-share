@@ -662,7 +662,12 @@ class Dealer:
             if cid in id2idx:
                 chunks[id2idx[cid]]["similarity"] += sim
                 continue
-            chunk = self.dataStore.get(cid, idx_nms, kb_ids)
+            # Try each index name until we find the chunk
+            chunk = None
+            for idx_nm in idx_nms:
+                chunk = self.dataStore.get(cid, idx_nm, kb_ids)
+                if chunk:
+                    break
             if not chunk:
                 continue
             d = {
@@ -874,7 +879,16 @@ class Dealer:
 
         vector_size = 1024
         for id, cks in mom_chunks.items():
-            chunk = self.dataStore.get(id, idx_nms, [ck["kb_id"] for ck in cks])
+            # Try each index name until we find the parent chunk
+            chunk = None
+            kb_ids_to_search = [ck["kb_id"] for ck in cks]
+            for idx_nm in idx_nms:
+                chunk = self.dataStore.get(id, idx_nm, kb_ids_to_search)
+                if chunk:
+                    break
+            if not chunk:
+                # If parent chunk not found, skip this group
+                continue
             d = {
                 "chunk_id": id,
                 "content_ltks": " ".join([ck["content_ltks"] for ck in cks]),

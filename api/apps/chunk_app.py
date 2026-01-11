@@ -358,8 +358,15 @@ async def retrieval_test():
             return get_data_error_result(message="Knowledgebase not found!")
 
         _question = question
+        # Auto-translate query based on first dataset language setting
         if langs:
+            # User explicitly provided languages - use them
             _question = await cross_languages(kb.tenant_id, None, _question, langs)
+        elif kb.language and kb.language.strip():
+            # Automatically translate to dataset language if not English
+            dataset_lang = kb.language.strip()
+            if dataset_lang.lower() not in ['english', 'en']:
+                _question = await cross_languages(kb.tenant_id, None, _question, [dataset_lang])
 
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 

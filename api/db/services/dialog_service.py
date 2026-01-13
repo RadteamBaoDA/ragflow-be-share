@@ -35,6 +35,7 @@ from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter
 from api.db.services.tenant_llm_service import TenantLLMService
+from api.utils.language_utils import detect_language
 from common.time_utils import current_timestamp, datetime_format
 from graphrag.general.mind_map_extractor import MindMapExtractor
 from rag.app.resume import forbidden_select_fields4resume
@@ -372,7 +373,15 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             dataset_lang = kb.language.strip()
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
-                questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], [dataset_lang])]
+                # Detect original language and include both for comprehensive keyword coverage
+                original_lang = detect_language(questions[0])
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], translation_langs)]
 
     if dialog.meta_data_filter:
         # Run blocking DB query in executor
@@ -817,9 +826,20 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
         first_kb = kbs[0]
         if first_kb.language and first_kb.language.strip():
             dataset_lang = first_kb.language.strip()
+            logging.info(f"Translating question to KB language '{dataset_lang}'")
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
-                translated_question = await cross_languages(tenant_id, None, question, [dataset_lang])
+                # Detect original language and include both for comprehensive keyword coverage
+                original_lang = detect_language(question)
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                logging.info(f"Translating question with languages {translation_langs}")
+                translated_question = await cross_languages(tenant_id, chat_llm_name, question, translation_langs)
+                logging.info(f"Translated question: {translated_question}")
 
     # Call async_retrieval directly for truly async reranking
     kbinfos = await retriever.async_retrieval(
@@ -913,7 +933,15 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
             dataset_lang = first_kb.language.strip()
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
-                translated_question = await cross_languages(tenant_id, None, question, [dataset_lang])
+                # Detect original language and include both for comprehensive keyword coverage
+                original_lang = detect_language(question)
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                translated_question = await cross_languages(tenant_id, None, question, translation_langs)
 
     # Call async_retrieval directly for truly async reranking
     ranks = await settings.retriever.async_retrieval(

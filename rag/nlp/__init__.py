@@ -335,7 +335,20 @@ def tokenize_chunks_with_images(chunks, doc, eng, images, child_delimiters_patte
     return res
 
 
-def tokenize_table(tbls, doc, eng, batch_size=10):
+def tokenize_table(tbls, doc, eng, batch_size=1, preserve_table_header=True):
+    """
+    Tokenize tables into chunks with configurable batch size.
+    
+    Args:
+        tbls: List of table tuples ((image, rows), positions)
+        doc: Document metadata dictionary
+        eng: Whether document is in English
+        batch_size: Number of rows per chunk (default=1 for row-level granularity)
+        preserve_table_header: Whether to include table header in each chunk for context
+    
+    Returns:
+        List of tokenized chunk dictionaries
+    """
     res = []
     # add tables
     for (img, rows), poss in tbls:
@@ -354,11 +367,30 @@ def tokenize_table(tbls, doc, eng, batch_size=10):
                 add_positions(d, poss)
             res.append(d)
             continue
+        
+        # For list of rows, extract header if present and preserve_table_header is True
+        header_row = None
+        start_idx = 0
+        if preserve_table_header and len(rows) > 0:
+            # Assume first row is header if it's significantly different or contains common header patterns
+            # For now, always treat first row as header
+            header_row = rows[0]
+            start_idx = 1
+        
         de = "; " if eng else "； "
-        for i in range(0, len(rows), batch_size):
+        # Process rows in batches, ensuring each chunk ends at complete row boundary
+        for i in range(start_idx, len(rows), batch_size):
             d = copy.deepcopy(doc)
-            r = de.join(rows[i:i + batch_size])
-            tokenize(d, r, eng)
+            batch_rows = rows[i:i + batch_size]
+            
+            # Add header context to each chunk for better retrieval
+            if header_row and preserve_table_header:
+                # Prepend header to batch for context
+                chunk_content = header_row + de + de.join(batch_rows)
+            else:
+                chunk_content = de.join(batch_rows)
+            
+            tokenize(d, chunk_content, eng)
             d["doc_type_kwd"] = "table"
             if img:
                 d["image"] = img

@@ -35,7 +35,7 @@ from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter
 from api.db.services.tenant_llm_service import TenantLLMService
-from api.utils.language_utils import detect_language
+from api.utils.language_utils import detect_language, extract_first_sentence_for_detection
 from common.time_utils import current_timestamp, datetime_format
 from graphrag.general.mind_map_extractor import MindMapExtractor
 from rag.app.resume import forbidden_select_fields4resume
@@ -295,7 +295,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         llm_model_config = TenantLLMService.get_model_config(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
 
     max_tokens = llm_model_config.get("max_tokens", 8192)
-
+    # Detect original language for possible cross-language retrieval   
+    original_lang = "English"
     check_llm_ts = timer()
 
     langfuse_tracer = None
@@ -374,7 +375,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
                 # Detect original language and include both for comprehensive keyword coverage
-                original_lang = detect_language(questions[0])
+                first_sentence = extract_first_sentence_for_detection(questions[0])
+                original_lang = detect_language(first_sentence if first_sentence else questions[0])
                 
                 # Include both original and dataset languages for better retrieval
                 translation_langs = [dataset_lang]
@@ -486,6 +488,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         return
 
     kwargs["knowledge"] = "\n------\n" + "\n\n------\n\n".join(knowledges)
+    kwargs["answer_language"] = original_lang
+    
     gen_conf = dialog.llm_setting
 
     msg = [{"role": "system", "content": prompt_config["system"].format(**kwargs)+attachments_}]
@@ -830,7 +834,8 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
                 # Detect original language and include both for comprehensive keyword coverage
-                original_lang = detect_language(question)
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
                 
                 # Include both original and dataset languages for better retrieval
                 translation_langs = [dataset_lang]
@@ -934,7 +939,8 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
             # Only translate if dataset language is not English
             if dataset_lang.lower() not in ['english', 'en']:
                 # Detect original language and include both for comprehensive keyword coverage
-                original_lang = detect_language(question)
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
                 
                 # Include both original and dataset languages for better retrieval
                 translation_langs = [dataset_lang]

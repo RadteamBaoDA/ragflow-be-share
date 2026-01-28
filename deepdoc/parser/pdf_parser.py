@@ -196,7 +196,7 @@ class RAGFlowPdfParser:
         logging.debug("Table processing...")
         imgs, pos = [], []
         tbcnt = [0]
-        MARGIN = 10
+        MARGIN = 20
         self.tb_cpns = []
         assert len(self.page_layout) == len(self.page_images)
         for p, tbls in enumerate(self.page_layout):  # for page
@@ -236,7 +236,7 @@ class RAGFlowPdfParser:
                     pg.append(it)
             self.tb_cpns.extend(pg)
 
-        def gather(kwd, fzy=10, ption=0.6):
+        def gather(kwd, fzy=10, ption=0.4):
             eles = Recognizer.sort_Y_firstly([r for r in self.tb_cpns if re.match(kwd, r["label"])], fzy)
             eles = Recognizer.layouts_cleanup(self.boxes, eles, 5, ption)
             return Recognizer.sort_Y_firstly(eles, 0)

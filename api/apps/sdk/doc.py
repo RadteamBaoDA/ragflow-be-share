@@ -1551,8 +1551,15 @@ async def retrieval_test(tenant_id):
         if req.get("rerank_id"):
             rerank_mdl = LLMBundle(kb.tenant_id, LLMType.RERANK, llm_name=req["rerank_id"])
 
+        # Auto-translate query based on first dataset language setting
         if langs:
+            # User explicitly provided languages - use them
             question = await cross_languages(kb.tenant_id, None, question, langs)
+        elif kb.language and kb.language.strip():
+            # Automatically translate to dataset language if not English
+            dataset_lang = kb.language.strip()
+            if dataset_lang.lower() not in ['english', 'en']:
+                question = await cross_languages(kb.tenant_id, None, question, [dataset_lang])
 
         if req.get("keyword", False):
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)

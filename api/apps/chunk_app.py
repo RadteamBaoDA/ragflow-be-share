@@ -16,6 +16,7 @@
 import asyncio
 import datetime
 import json
+import logging
 import re
 import base64
 import xxhash
@@ -37,6 +38,7 @@ from common.string_utils import remove_redundant_spaces
 from common.constants import RetCode, LLMType, ParserType, PAGERANK_FLD
 from common import settings
 from api.apps import login_required, current_user
+from api.utils.language_utils import detect_language, extract_first_sentence_for_detection
 
 
 @manager.route('/list', methods=['POST'])  # noqa: F821
@@ -326,6 +328,7 @@ async def retrieval_test():
         tenant_ids = []
 
         meta_data_filter = {}
+        search_config = {}  # Initialize to avoid NameError
         chat_mdl = None
         if req.get("search_id", ""):
             search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
@@ -358,9 +361,26 @@ async def retrieval_test():
             return get_data_error_result(message="Knowledgebase not found!")
 
         _question = question
+        # Auto-translate query based on first dataset language setting
         if langs:
+            # User explicitly provided languages - use them
             _question = await cross_languages(kb.tenant_id, None, _question, langs)
-
+        elif kb.language and kb.language.strip():
+            # Automatically translate to dataset language if not English
+            dataset_lang = kb.language.strip()
+            logging.info(f"Translating question to KB language '{dataset_lang}'")
+            if dataset_lang.lower() not in ['english', 'en']:
+                # Detect original language and include both for comprehensive keyword coverage
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                _question = await cross_languages(kb.tenant_id, search_config.get("chat_id", ""), _question, translation_langs)
+                logging.info(f"Translated question with languages {translation_langs}: {_question}")
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 
         rerank_mdl = None

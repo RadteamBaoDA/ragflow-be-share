@@ -17,6 +17,73 @@
 Language detection utilities for multi-language support.
 Detects English, Japanese, and Vietnamese without external dependencies.
 """
+import re
+
+
+def extract_first_sentence_for_detection(text: str, max_chars: int = 50) -> str:
+    """
+    Extract first sentence from text for improved language detection.
+    
+    Limits text to first sentence (by \n or .) or max characters, whichever comes first.
+    Removes quoted strings and acronyms/initialisms to focus on natural language.
+    
+    Args:
+        text: Input text to process
+        max_chars: Maximum characters to extract (default: 50)
+        
+    Returns:
+        Cleaned first sentence suitable for language detection
+        
+    Examples:
+        >>> extract_first_sentence_for_detection("What is 'machine learning'?")
+        'What is ?'
+        >>> extract_first_sentence_for_detection("Explain NDA concept. More text here.")
+        'Explain concept.'
+        >>> extract_first_sentence_for_detection("機械学習とは何ですか？次の文。")
+        '機械学習とは何ですか？'
+    """
+    if not text or not text.strip():
+        return ""
+    
+    text = text.strip()
+    
+    # Find first sentence by delimiter (\n or .)
+    first_sentence = text
+    newline_pos = text.find('\n')
+    period_pos = text.find('.')
+    
+    # Determine the earliest delimiter position
+    delimiters = [pos for pos in [newline_pos, period_pos] if pos != -1]
+    if delimiters:
+        first_delim = min(delimiters)
+        first_sentence = text[:first_delim + 1]  # Include the delimiter
+    
+    # Apply max character limit
+    if len(first_sentence) > max_chars:
+        first_sentence = first_sentence[:max_chars]
+    
+    # Remove quoted text (double quotes, single quotes, and CJK quotes)
+    # Pattern matches: "text", 'text', 「text」, 『text』, etc.
+    quote_patterns = [
+        r'"[^"]*"',                    # Double quotes
+        r"'[^']*'",                    # Single quotes
+        r'「[^」]*」',                  # Japanese corner brackets
+        r'『[^』]*』',                  # Japanese white corner brackets
+        r'"[^"]*"',                    # CJK double quotes
+        '\u2018[^\u2019]*\u2019',      # CJK single quotes (U+2018 and U+2019)
+    ]
+    
+    for pattern in quote_patterns:
+        first_sentence = re.sub(pattern, '', first_sentence)
+    
+    # Remove acronyms/initialisms (all-caps words of 2-5 characters)
+    # Matches standalone uppercase words like NDA, NASA, PIN
+    first_sentence = re.sub(r'\b[A-Z]{2,5}\b', '', first_sentence)
+    
+    # Clean up extra whitespace
+    first_sentence = re.sub(r'\s+', ' ', first_sentence).strip()
+    
+    return first_sentence
 
 
 def detect_language(text: str) -> str:

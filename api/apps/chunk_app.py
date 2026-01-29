@@ -38,7 +38,7 @@ from common.string_utils import remove_redundant_spaces
 from common.constants import RetCode, LLMType, ParserType, PAGERANK_FLD
 from common import settings
 from api.apps import login_required, current_user
-from api.utils.language_utils import detect_language
+from api.utils.language_utils import detect_language, extract_first_sentence_for_detection
 
 
 @manager.route('/list', methods=['POST'])  # noqa: F821
@@ -371,7 +371,8 @@ async def retrieval_test():
             logging.info(f"Translating question to KB language '{dataset_lang}'")
             if dataset_lang.lower() not in ['english', 'en']:
                 # Detect original language and include both for comprehensive keyword coverage
-                original_lang = detect_language(question)
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
                 
                 # Include both original and dataset languages for better retrieval
                 translation_langs = [dataset_lang]

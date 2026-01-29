@@ -187,7 +187,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
     # is_english(random_choices([t for t, _ in sections], k=218))
     eng = lang.lower() == "english"
 
-    res = tokenize_table(tbls, doc, eng)
+    table_batch_size = parser_config.get("table_batch_size", 1)
+    preserve_header = parser_config.get("preserve_table_header", True)
+    res = tokenize_table(tbls, doc, eng, batch_size=table_batch_size, preserve_table_header=preserve_header)
     res.extend(tokenize_chunks(chunks, doc, eng, pdf_parser))
     table_ctx = max(0, int(parser_config.get("table_context_size", 0) or 0))
     image_ctx = max(0, int(parser_config.get("image_context_size", 0) or 0))

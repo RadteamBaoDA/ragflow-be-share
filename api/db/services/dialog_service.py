@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import binascii
 import logging
 import re
@@ -34,6 +35,7 @@ from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter
 from api.db.services.tenant_llm_service import TenantLLMService
+from api.utils.language_utils import detect_language, extract_first_sentence_for_detection
 from common.time_utils import current_timestamp, datetime_format
 from graphrag.general.mind_map_extractor import MindMapExtractor
 from rag.app.resume import forbidden_select_fields4resume
@@ -293,7 +295,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         llm_model_config = TenantLLMService.get_model_config(dialog.tenant_id, LLMType.CHAT, dialog.llm_id)
 
     max_tokens = llm_model_config.get("max_tokens", 8192)
-
+    # Detect original language for possible cross-language retrieval   
+    original_lang = "English"
     check_llm_ts = timer()
 
     langfuse_tracer = None
@@ -307,7 +310,13 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             trace_context = {"trace_id": trace_id}
 
     check_langfuse_tracer_ts = timer()
-    kbs, embd_mdl, rerank_mdl, chat_mdl, tts_mdl = get_models(dialog)
+    # Run blocking model loading in executor
+    loop = asyncio.get_event_loop()
+    kbs, embd_mdl, rerank_mdl, chat_mdl, tts_mdl = await loop.run_in_executor(
+        None,
+        get_models,
+        dialog
+    )
     toolcall_session, tools = kwargs.get("toolcall_session"), kwargs.get("tools")
     if toolcall_session and tools:
         chat_mdl.bind_tools(toolcall_session, tools)
@@ -323,7 +332,12 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         attachments_ = "\n\n".join(FileService.get_files(messages[-1]["files"]))
 
     prompt_config = dialog.prompt_config
-    field_map = KnowledgebaseService.get_field_map(dialog.kb_ids)
+    # Run blocking DB query in executor
+    field_map = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_field_map,
+        dialog.kb_ids
+    )
     # try to use sql if field mapping is good to go
     if field_map:
         logging.debug("Use SQL to retrieval:{}".format(questions[-1]))
@@ -345,11 +359,39 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
     else:
         questions = questions[-1:]
 
+    # Handle language translation - either explicit or automatic based on first dataset language
     if prompt_config.get("cross_languages"):
+        # User explicitly configured languages in prompt config - use them
         questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], prompt_config["cross_languages"])]
+    elif dialog.kb_ids:
+        # Auto-translate based on first dataset language setting
+        e, kb = await loop.run_in_executor(
+            None,
+            KnowledgebaseService.get_by_id,
+            dialog.kb_ids[0]
+        )
+        if e and kb.language and kb.language.strip():
+            dataset_lang = kb.language.strip()
+            # Only translate if dataset language is not English
+            if dataset_lang.lower() not in ['english', 'en']:
+                # Detect original language and include both for comprehensive keyword coverage
+                first_sentence = extract_first_sentence_for_detection(questions[0])
+                original_lang = detect_language(first_sentence if first_sentence else questions[0])
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], translation_langs)]
 
     if dialog.meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(dialog.kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            dialog.kb_ids
+        )
         attachments = await apply_meta_data_filter(
             dialog.meta_data_filter,
             metas,
@@ -395,26 +437,33 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     yield think
         else:
             if embd_mdl:
-                kbinfos = retriever.retrieval(
-                    " ".join(questions),
-                    embd_mdl,
-                    tenant_ids,
-                    dialog.kb_ids,
-                    1,
-                    dialog.top_n,
-                    dialog.similarity_threshold,
-                    dialog.vector_similarity_weight,
+                # Call async_retrieval directly for truly async reranking
+                kbinfos = await retriever.async_retrieval(
+                    question=" ".join(questions),
+                    embd_mdl=embd_mdl,
+                    tenant_ids=tenant_ids,
+                    kb_ids=dialog.kb_ids,
+                    page=1,
+                    page_size=dialog.top_n,
+                    similarity_threshold=dialog.similarity_threshold,
+                    vector_similarity_weight=dialog.vector_similarity_weight,
+                    top=1024,
                     doc_ids=attachments,
-                    top=dialog.top_k,
                     aggs=True,
                     rerank_mdl=rerank_mdl,
-                    rank_feature=label_question(" ".join(questions), kbs),
+                    rank_feature=label_question(" ".join(questions), kbs)
                 )
                 if prompt_config.get("toc_enhance"):
                     cks = retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)
                     if cks:
                         kbinfos["chunks"] = cks
-                kbinfos["chunks"] = retriever.retrieval_by_children(kbinfos["chunks"], tenant_ids)
+                # Run blocking operation in executor
+                kbinfos["chunks"] = await loop.run_in_executor(
+                    None,
+                    retriever.retrieval_by_children,
+                    kbinfos["chunks"],
+                    tenant_ids
+                )
             if prompt_config.get("tavily_api_key"):
                 tav = Tavily(prompt_config["tavily_api_key"])
                 tav_res = tav.retrieve_chunks(" ".join(questions))
@@ -439,6 +488,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         return
 
     kwargs["knowledge"] = "\n------\n" + "\n\n------\n\n".join(knowledges)
+    kwargs["answer_language"] = original_lang
+    
     gen_conf = dialog.llm_setting
 
     msg = [{"role": "system", "content": prompt_config["system"].format(**kwargs)+attachments_}]
@@ -741,7 +792,13 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
     rerank_id = search_config.get("rerank_id", "")
     meta_data_filter = search_config.get("meta_data_filter")
 
-    kbs = KnowledgebaseService.get_by_ids(kb_ids)
+    # Run blocking DB operations in executor
+    loop = asyncio.get_event_loop()
+    kbs = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_by_ids,
+        kb_ids
+    )
     embedding_list = list(set([kb.embd_id for kb in kbs]))
 
     is_knowledge_graph = all([kb.parser_id == ParserType.KG for kb in kbs])
@@ -755,11 +812,43 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
     tenant_ids = list(set([kb.tenant_id for kb in kbs]))
 
     if meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            kb_ids
+        )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    kbinfos = retriever.retrieval(
-        question=question,
+    # Handle language translation - check if cross_languages is in search_config or auto-translate based on dataset language
+    translated_question = question
+    if search_config.get("cross_languages"):
+        # User explicitly configured languages in search config - use them
+        translated_question = await cross_languages(tenant_id, None, question, search_config["cross_languages"])
+    elif kb_ids and kbs:
+        # Auto-translate based on first dataset language setting
+        first_kb = kbs[0]
+        if first_kb.language and first_kb.language.strip():
+            dataset_lang = first_kb.language.strip()
+            logging.info(f"Translating question to KB language '{dataset_lang}'")
+            # Only translate if dataset language is not English
+            if dataset_lang.lower() not in ['english', 'en']:
+                # Detect original language and include both for comprehensive keyword coverage
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                logging.info(f"Translating question with languages {translation_langs}")
+                translated_question = await cross_languages(tenant_id, chat_llm_name, question, translation_langs)
+                logging.info(f"Translated question: {translated_question}")
+
+    # Call async_retrieval directly for truly async reranking
+    kbinfos = await retriever.async_retrieval(
+        question=translated_question,
         embd_mdl=embd_mdl,
         tenant_ids=tenant_ids,
         kb_ids=kb_ids,
@@ -810,7 +899,14 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
     doc_ids = search_config.get("doc_ids", [])
     rerank_id = search_config.get("rerank_id", "")
     rerank_mdl = None
-    kbs = KnowledgebaseService.get_by_ids(kb_ids)
+    
+    # Run blocking DB operations in executor
+    loop = asyncio.get_event_loop()
+    kbs = await loop.run_in_executor(
+        None,
+        KnowledgebaseService.get_by_ids,
+        kb_ids
+    )
     if not kbs:
         return {"error": "No KB selected"}
     embedding_list = list(set([kb.embd_id for kb in kbs]))
@@ -822,11 +918,40 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
         rerank_mdl = LLMBundle(tenant_id, LLMType.RERANK, rerank_id)
 
     if meta_data_filter:
-        metas = DocumentService.get_meta_by_kbs(kb_ids)
+        # Run blocking DB query in executor
+        metas = await loop.run_in_executor(
+            None,
+            DocumentService.get_meta_by_kbs,
+            kb_ids
+        )
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
-    ranks = settings.retriever.retrieval(
-        question=question,
+    # Handle language translation - check if cross_languages is in search_config or auto-translate based on dataset language
+    translated_question = question
+    if search_config.get("cross_languages"):
+        # User explicitly configured languages in search config - use them
+        translated_question = await cross_languages(tenant_id, None, question, search_config["cross_languages"])
+    elif kb_ids and kbs:
+        # Auto-translate based on first dataset language setting
+        first_kb = kbs[0]
+        if first_kb.language and first_kb.language.strip():
+            dataset_lang = first_kb.language.strip()
+            # Only translate if dataset language is not English
+            if dataset_lang.lower() not in ['english', 'en']:
+                # Detect original language and include both for comprehensive keyword coverage
+                first_sentence = extract_first_sentence_for_detection(question)
+                original_lang = detect_language(first_sentence if first_sentence else question)
+                
+                # Include both original and dataset languages for better retrieval
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                
+                translated_question = await cross_languages(tenant_id, None, question, translation_langs)
+
+    # Call async_retrieval directly for truly async reranking
+    ranks = await settings.retriever.async_retrieval(
+        question=translated_question,
         embd_mdl=embd_mdl,
         tenant_ids=tenant_ids,
         kb_ids=kb_ids,
@@ -838,7 +963,7 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
         doc_ids=doc_ids,
         aggs=False,
         rerank_mdl=rerank_mdl,
-        rank_feature=label_question(question, kbs),
+        rank_feature=label_question(question, kbs)
     )
     mindmap = MindMapExtractor(chat_mdl)
     mind_map = await mindmap([c["content_with_weight"] for c in ranks["chunks"]])

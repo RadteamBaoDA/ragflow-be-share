@@ -42,6 +42,13 @@ services:
       - ../history_data_agent:/ragflow/history_data_agent
       - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template
       - ./entrypoint.sh:/ragflow/entrypoint.sh
+      - D:\Project\RAG\ragflow-fe-share\dist:/ragflow/web/dist:ro
+      - D:\Project\RAG\ragflow-be-share\api\apps\conversation_app.py:/ragflow/api/apps/conversation_app.py
+      - D:\Project\RAG\ragflow-be-share\api\db\services\dialog_service.py:/ragflow/api/db/services/dialog_service.py
+      - D:\Project\RAG\ragflow-be-share\api\db\services\conversation_service.py:/ragflow/api/db/services/conversation_service.py
+      - D:\Project\RAG\ragflow-be-share\api\db\services\llm_service.py:/ragflow/api/db/services/llm_service.py
+      - D:\Project\RAG\ragflow-be-share\rag\llm\rerank_model.py:/ragflow/rag/llm/rerank_model.py
+      - D:\Project\RAG\ragflow-be-share\rag\nlp\search.py:/ragflow/rag/nlp/search.py
     env_file: .env
     networks:
       - ragflow

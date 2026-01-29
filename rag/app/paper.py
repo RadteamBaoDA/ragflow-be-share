@@ -205,7 +205,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
     eng = lang.lower() == "english"  # pdf_parser.is_english
     logging.debug("It's English.....{}".format(eng))
 
-    res = tokenize_table(paper["tables"], doc, eng)
+    table_batch_size = parser_config.get("table_batch_size", 1)
+    preserve_header = parser_config.get("preserve_table_header", True)
+    res = tokenize_table(paper["tables"], doc, eng, batch_size=table_batch_size, preserve_table_header=preserve_header)
 
     if paper["abstract"]:
         d = copy.deepcopy(doc)

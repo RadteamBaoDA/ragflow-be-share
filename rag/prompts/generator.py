@@ -22,6 +22,7 @@ from copy import deepcopy
 from typing import Tuple
 import jinja2
 import json_repair
+from markdownify import markdownify
 from common.misc_utils import hash_str2int
 from rag.nlp import rag_tokenizer
 from rag.prompts.template import load_prompt
@@ -35,6 +36,37 @@ INPUT_UTILIZATION = 0.5
 
 def get_value(d, k1, k2):
     return d.get(k1, d.get(k2))
+
+
+def html_to_markdown(content):
+    """
+    Convert HTML content (especially tables) to markdown format for better LLM processing.
+    
+    Args:
+        content: String content that may contain HTML
+        
+    Returns:
+        Content with HTML converted to markdown
+    """
+    if not content or not isinstance(content, str):
+        return content
+    
+    # Check if content contains HTML table tags
+    if '<table' in content.lower() or '<html' in content.lower():
+        try:
+            # Convert HTML to markdown, preserving structure
+            markdown_content = markdownify(
+                content,
+                heading_style="ATX",  # Use # for headings
+                bullets="-",  # Use - for bullet lists
+                strip=['script', 'style']  # Remove script and style tags
+            )
+            return markdown_content.strip()
+        except Exception as e:
+            logging.warning(f"Failed to convert HTML to markdown: {e}")
+            return content
+    
+    return content
 
 
 def chunks_format(reference):
@@ -129,7 +161,9 @@ def kb_prompt(kbinfos, max_tokens, hash_id=False):
         for k, v in docs.get(get_value(ck, "doc_id", "document_id"), {}).items():
             cnt += draw_node(k, v)
         cnt += "\n└── Content:\n"
-        cnt += get_value(ck, "content", "content_with_weight")
+        # Convert HTML content (especially tables) to markdown before sending to LLM
+        content = get_value(ck, "content", "content_with_weight")
+        cnt += html_to_markdown(content)
         knowledges.append(cnt)
 
     return knowledges

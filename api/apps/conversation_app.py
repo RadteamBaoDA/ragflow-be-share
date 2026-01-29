@@ -13,6 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import asyncio
 import json
 import os
 import re
@@ -72,7 +73,10 @@ async def set_conversation():
             "user_id": current_user.id,
             "reference": [],
         }
-        ConversationService.save(**conv)
+        # Run blocking DB save in executor
+        loop = asyncio.get_event_loop()
+        from functools import partial
+        await loop.run_in_executor(None, partial(ConversationService.save, **conv))
         return get_json_result(data=conv)
     except Exception as e:
         return server_error_response(e)
@@ -83,12 +87,26 @@ async def set_conversation():
 async def get():
     conv_id = request.args["conversation_id"]
     try:
-        e, conv = ConversationService.get_by_id(conv_id)
+        # Run blocking DB operations in executor
+        loop = asyncio.get_event_loop()
+        e, conv = await loop.run_in_executor(
+            None,
+            ConversationService.get_by_id,
+            conv_id
+        )
         if not e:
             return get_data_error_result(message="Conversation not found!")
-        tenants = UserTenantService.query(user_id=current_user.id)
+        
+        from functools import partial
+        tenants = await loop.run_in_executor(
+            None,
+            partial(UserTenantService.query, user_id=current_user.id)
+        )
         for tenant in tenants:
-            dialog = DialogService.query(tenant_id=tenant.tenant_id, id=conv.dialog_id)
+            dialog = await loop.run_in_executor(
+                None,
+                partial(DialogService.query, tenant_id=tenant.tenant_id, id=conv.dialog_id)
+            )
             if dialog and len(dialog) > 0:
                 avatar = dialog[0].icon
                 break
@@ -194,11 +212,21 @@ async def completion():
             chat_model_config[model_config] = config
 
     try:
-        e, conv = ConversationService.get_by_id(req["conversation_id"])
+        # Run blocking DB operations in executor to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        e, conv = await loop.run_in_executor(
+            None,
+            ConversationService.get_by_id,
+            req["conversation_id"]
+        )
         if not e:
             return get_data_error_result(message="Conversation not found!")
         conv.message = deepcopy(req["messages"])
-        e, dia = DialogService.get_by_id(conv.dialog_id)
+        e, dia = await loop.run_in_executor(
+            None,
+            DialogService.get_by_id,
+            conv.dialog_id
+        )
         if not e:
             return get_data_error_result(message="Dialog not found!")
         del req["conversation_id"]
@@ -210,7 +238,13 @@ async def completion():
         conv.reference.append({"chunks": [], "doc_aggs": []})
 
         if chat_model_id:
-            if not TenantLLMService.get_api_key(tenant_id=dia.tenant_id, model_name=chat_model_id):
+            api_key = await loop.run_in_executor(
+                None,
+                TenantLLMService.get_api_key,
+                dia.tenant_id,
+                chat_model_id
+            )
+            if not api_key:
                 req.pop("chat_model_id", None)
                 req.pop("chat_model_config", None)
                 return get_data_error_result(message=f"Cannot use specified model {chat_model_id}.")
@@ -225,7 +259,14 @@ async def completion():
                     ans = structure_answer(conv, ans, message_id, conv.id)
                     yield "data:" + json.dumps({"code": 0, "message": "", "data": ans}, ensure_ascii=False) + "\n\n"
                 if not is_embedded:
-                    ConversationService.update_by_id(conv.id, conv.to_dict())
+                    # Run DB update in executor to avoid blocking
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        ConversationService.update_by_id,
+                        conv.id,
+                        conv.to_dict()
+                    )
             except Exception as e:
                 logging.exception(e)
                 yield "data:" + json.dumps({"code": 500, "message": str(e), "data": {"answer": "**ERROR**: " + str(e), "reference": []}}, ensure_ascii=False) + "\n\n"
@@ -244,7 +285,13 @@ async def completion():
             async for ans in async_chat(dia, msg, **req):
                 answer = structure_answer(conv, ans, message_id, conv.id)
                 if not is_embedded:
-                    ConversationService.update_by_id(conv.id, conv.to_dict())
+                    # Run DB update in executor to avoid blocking
+                    await loop.run_in_executor(
+                        None,
+                        ConversationService.update_by_id,
+                        conv.id,
+                        conv.to_dict()
+                    )
                 break
             return get_json_result(data=answer)
     except Exception as e:

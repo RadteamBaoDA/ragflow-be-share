@@ -328,7 +328,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000,
         ti_list, tbls = docx_parser(filename, binary,
                                     from_page=0, to_page=10000, callback=callback)
         tbls = vision_figure_parser_docx_wrapper(sections=ti_list, tbls=tbls, callback=callback, **kwargs)
-        res = tokenize_table(tbls, doc, eng)
+        table_batch_size = parser_config.get("table_batch_size", 1)
+        preserve_header = parser_config.get("preserve_table_header", True)
+        res = tokenize_table(tbls, doc, eng, batch_size=table_batch_size, preserve_table_header=preserve_header)
         for text, image in ti_list:
             d = copy.deepcopy(doc)
             if image:

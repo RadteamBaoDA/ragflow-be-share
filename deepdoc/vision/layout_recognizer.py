@@ -53,7 +53,14 @@ class LayoutRecognizer(Recognizer):
             model_dir = snapshot_download(repo_id="InfiniFlow/deepdoc", local_dir=os.path.join(get_project_base_directory(), "rag/res/deepdoc"), local_dir_use_symlinks=False)
             super().__init__(self.labels, domain, model_dir)
 
-        self.garbage_layouts = ["footer", "header", "reference"]
+        # Check if PDF header/footer extraction is enabled via environment variable
+        enable_pdf_header_footer = os.environ.get("ENABLE_PDF_HEADER_FOOTER_EXTRACTION", "false").lower() in ["true", "1", "yes"]
+        if enable_pdf_header_footer:
+            self.garbage_layouts = ["reference"]
+            logging.info("PDF header/footer extraction enabled via ENABLE_PDF_HEADER_FOOTER_EXTRACTION")
+        else:
+            self.garbage_layouts = ["footer", "header", "reference"]
+        
         self.client = None
         if os.environ.get("TENSORRT_DLA_SVR"):
             from deepdoc.vision.dla_cli import DLAClient
@@ -90,7 +97,7 @@ class LayoutRecognizer(Recognizer):
                     "page_number": pn,
                 }
                 for b in lts
-                if float(b["score"]) >= 0.4 or b["type"] not in self.garbage_layouts
+                if (b["type"] == "table" and float(b["score"]) >= 0.3) or float(b["score"]) >= 0.4 or b["type"] not in self.garbage_layouts
             ]
             lts = self.sort_Y_firstly(lts, np.mean([lt["bottom"] - lt["top"] for lt in lts]) / 2)
             lts = self.layouts_cleanup(bxs, lts)
@@ -114,9 +121,10 @@ class LayoutRecognizer(Recognizer):
                         i += 1
                         continue
                     lts_[ii]["visited"] = True
+                    # Keep headers in the top 10% and footers in the bottom 10% of the page
                     keep_feats = [
-                        lts_[ii]["type"] == "footer" and bxs[i]["bottom"] < image_list[pn].size[1] * 0.9 / scale_factor,
-                        lts_[ii]["type"] == "header" and bxs[i]["top"] > image_list[pn].size[1] * 0.1 / scale_factor,
+                        lts_[ii]["type"] == "footer" and bxs[i]["bottom"] > image_list[pn].size[1] * 0.9 / scale_factor,
+                        lts_[ii]["type"] == "header" and bxs[i]["top"] < image_list[pn].size[1] * 0.1 / scale_factor,
                     ]
                     if drop and lts_[ii]["type"] in self.garbage_layouts and not any(keep_feats):
                         if lts_[ii]["type"] not in garbages:
@@ -264,7 +272,14 @@ class AscendLayoutRecognizer(Recognizer):
         device_id = int(os.getenv("ASCEND_LAYOUT_RECOGNIZER_DEVICE_ID", 0))
         self.session = InferSession(device_id=device_id, model_path=model_file_path)
         self.input_shape = self.session.get_inputs()[0].shape[2:4]  # H,W
-        self.garbage_layouts = ["footer", "header", "reference"]
+        
+        # Check if PDF header/footer extraction is enabled via environment variable
+        enable_pdf_header_footer = os.environ.get("ENABLE_PDF_HEADER_FOOTER_EXTRACTION", "false").lower() in ["true", "1", "yes"]
+        if enable_pdf_header_footer:
+            self.garbage_layouts = ["reference"]
+            logging.info("PDF header/footer extraction enabled via ENABLE_PDF_HEADER_FOOTER_EXTRACTION")
+        else:
+            self.garbage_layouts = ["footer", "header", "reference"]
 
     def preprocess(self, image_list):
         inputs = []
@@ -417,9 +432,10 @@ class AscendLayoutRecognizer(Recognizer):
 
                     lts_of_ty[ii]["visited"] = True
 
+                    # Keep headers in the top 10% and footers in the bottom 10% of the page
                     keep_feats = [
-                        lts_of_ty[ii]["type"] == "footer" and bxs[i]["bottom"] < image_list[pn].shape[0] * 0.9 / scale_factor,
-                        lts_of_ty[ii]["type"] == "header" and bxs[i]["top"] > image_list[pn].shape[0] * 0.1 / scale_factor,
+                        lts_of_ty[ii]["type"] == "footer" and bxs[i]["bottom"] > image_list[pn].shape[0] * 0.9 / scale_factor,
+                        lts_of_ty[ii]["type"] == "header" and bxs[i]["top"] < image_list[pn].shape[0] * 0.1 / scale_factor,
                     ]
                     if drop and lts_of_ty[ii]["type"] in self.garbage_layouts and not any(keep_feats):
                         garbages.setdefault(lts_of_ty[ii]["type"], []).append(bxs[i].get("text", ""))

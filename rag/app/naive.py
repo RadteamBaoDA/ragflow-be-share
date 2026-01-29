@@ -782,7 +782,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
         if name in ["tcadp", "docling", "mineru"]:
             parser_config["chunk_token_num"] = 0
 
-        res = tokenize_table(tables, doc, is_english)
+        table_batch_size = parser_config.get("table_batch_size", 1)
+        preserve_header = parser_config.get("preserve_table_header", True)
+        res = tokenize_table(tables, doc, is_english, batch_size=table_batch_size, preserve_table_header=preserve_header)
         callback(0.8, "Finish parsing.")
 
     elif re.search(r"\.(csv|xlsx?)$", filename, re.IGNORECASE):
@@ -812,7 +814,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
                 file_type=file_type
             )
             parser_config["chunk_token_num"] = 0
-            res = tokenize_table(tables, doc, is_english)
+            table_batch_size = parser_config.get("table_batch_size", 1)
+            preserve_header = parser_config.get("preserve_table_header", True)
+            res = tokenize_table(tables, doc, is_english, batch_size=table_batch_size, preserve_table_header=preserve_header)
             callback(0.8, "Finish parsing.")
         else:
             # Default DeepDOC parser
@@ -879,7 +883,9 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
                 soup = markdown_parser.md_to_html(section_text)
                 hyperlink_urls = markdown_parser.get_hyperlink_urls(soup)
                 urls.update(hyperlink_urls)
-        res = tokenize_table(tables, doc, is_english)
+        table_batch_size = parser_config.get("table_batch_size", 1)
+        preserve_header = parser_config.get("preserve_table_header", True)
+        res = tokenize_table(tables, doc, is_english, batch_size=table_batch_size, preserve_table_header=preserve_header)
         callback(0.8, "Finish parsing.")
 
     elif re.search(r"\.(htm|html)$", filename, re.IGNORECASE):

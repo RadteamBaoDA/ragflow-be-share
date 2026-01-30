@@ -347,7 +347,7 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             return
 
     for p in prompt_config["parameters"]:
-        if p["key"] == "knowledge":
+        if p["key"] == "knowledge" or p["key"] == "answer_language":
             continue
         if p["key"] not in kwargs and not p["optional"]:
             raise KeyError("Miss parameter: " + p["key"])

@@ -364,6 +364,10 @@ def get_parser_config(chunk_method, parser_config):
     base_defaults = {
         "table_context_size": 0,
         "image_context_size": 0,
+        "table_chunk_token_num": 256,
+        "table_header_repeat": True,
+        "large_page_mode": True,
+        "large_page_threshold_pt": 3000,
     }
     key_mapping = {
         "naive": {

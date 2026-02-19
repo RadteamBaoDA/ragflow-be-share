@@ -372,30 +372,139 @@ def tokenize_chunks_with_images(chunks, doc, eng, images, child_delimiters_patte
     return res
 
 
-def tokenize_table(tbls, doc, eng, batch_size=10):
+def _split_plain_text_by_token_budget(text, token_budget):
+    text = str(text)
+    if token_budget <= 0:
+        return [text]
+    if num_tokens_from_string(text) <= token_budget:
+        return [text]
+
+    lines = [ln.strip() for ln in re.split(r"\n+", text) if ln and ln.strip()]
+    if not lines:
+        return [text]
+
+    chunks = []
+    current = []
+    for ln in lines:
+        candidate = "\n".join(current + [ln])
+        if current and num_tokens_from_string(candidate) > token_budget:
+            chunks.append("\n".join(current))
+            current = [ln]
+            continue
+        current.append(ln)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks or [text]
+
+
+def _split_table_rows_by_token_budget(rows, token_budget, eng):
+    if token_budget <= 0:
+        de = "; " if eng else "； "
+        return [de.join(str(row) for row in rows)]
+
+    de = "; " if eng else "； "
+    chunks = []
+    current = []
+    for row in rows:
+        row = str(row)
+        candidate = de.join(current + [row])
+        if current and num_tokens_from_string(candidate) > token_budget:
+            chunks.append(de.join(current))
+            current = [row]
+            continue
+        current.append(row)
+    if current:
+        chunks.append(de.join(current))
+    return chunks
+
+
+def _split_table_html_by_token_budget(table_html, token_budget, table_header_repeat=True):
+    if token_budget <= 0 or num_tokens_from_string(table_html) <= token_budget:
+        return [table_html]
+
+    table_open_match = re.search(r"<table\b[^>]*>", table_html, flags=re.IGNORECASE)
+    table_open = table_open_match.group(0) if table_open_match else "<table>"
+    caption_match = re.search(r"<caption\b[^>]*>.*?</caption>", table_html, flags=re.IGNORECASE | re.DOTALL)
+    caption = caption_match.group(0) if caption_match else ""
+    rows = re.findall(r"<tr\b[^>]*>.*?</tr>", table_html, flags=re.IGNORECASE | re.DOTALL)
+    if not rows:
+        return _split_plain_text_by_token_budget(table_html, token_budget)
+
+    header_rows = []
+    body_rows = []
+    for row in rows:
+        if re.search(r"<th\b", row, flags=re.IGNORECASE):
+            header_rows.append(row)
+        else:
+            body_rows.append(row)
+
+    if not body_rows:
+        header_rows = []
+        body_rows = rows
+
+    def render(chunk_rows, include_header):
+        header = "".join(header_rows) if include_header and header_rows else ""
+        return f"{table_open}{caption}{header}{''.join(chunk_rows)}</table>"
+
+    chunks = []
+    current = []
+    is_first_chunk = True
+    for row in body_rows:
+        include_header = is_first_chunk or table_header_repeat
+        candidate = render(current + [row], include_header)
+        if current and num_tokens_from_string(candidate) > token_budget:
+            chunks.append(render(current, include_header))
+            current = [row]
+            is_first_chunk = False
+            continue
+        current.append(row)
+
+    if current:
+        include_header = is_first_chunk or table_header_repeat
+        chunks.append(render(current, include_header))
+
+    return chunks or [table_html]
+
+
+def tokenize_table(tbls, doc, eng, batch_size=10, table_chunk_token_num=0, table_header_repeat=True):
     res = []
     # add tables
     for (img, rows), poss in tbls:
         if not rows:
             continue
         if isinstance(rows, str):
-            d = copy.deepcopy(doc)
-            tokenize(d, rows, eng)
-            d["content_with_weight"] = rows
-            d["doc_type_kwd"] = "table"
-            if img:
-                d["image"] = img
-                if d["content_with_weight"].find("<tr>") < 0:
-                    d["doc_type_kwd"] = "image"
-            if poss:
-                add_positions(d, poss)
-            res.append(d)
+            if table_chunk_token_num > 0:
+                if rows.find("<table") >= 0 and rows.find("<tr") >= 0:
+                    row_chunks = _split_table_html_by_token_budget(rows, table_chunk_token_num, table_header_repeat)
+                else:
+                    row_chunks = _split_plain_text_by_token_budget(rows, table_chunk_token_num)
+            else:
+                row_chunks = [rows]
+
+            for rows_chunk in row_chunks:
+                d = copy.deepcopy(doc)
+                tokenize(d, rows_chunk, eng)
+                d["content_with_weight"] = rows_chunk
+                d["doc_type_kwd"] = "table"
+                if img:
+                    d["image"] = img
+                    if d["content_with_weight"].find("<tr>") < 0:
+                        d["doc_type_kwd"] = "image"
+                if poss:
+                    add_positions(d, poss)
+                res.append(d)
             continue
-        de = "; " if eng else "； "
-        for i in range(0, len(rows), batch_size):
+
+        if table_chunk_token_num > 0:
+            row_chunks = _split_table_rows_by_token_budget(rows, table_chunk_token_num, eng)
+        else:
+            de = "; " if eng else "； "
+            row_chunks = [de.join(str(x) for x in rows[i:i + batch_size]) for i in range(0, len(rows), batch_size)]
+
+        for r in row_chunks:
             d = copy.deepcopy(doc)
-            r = de.join(rows[i:i + batch_size])
             tokenize(d, r, eng)
+            d["content_with_weight"] = r
             d["doc_type_kwd"] = "table"
             if img:
                 d["image"] = img

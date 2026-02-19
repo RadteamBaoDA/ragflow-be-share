@@ -419,10 +419,15 @@ class TextRecognizer:
 
 class TextDetector:
     def __init__(self, model_dir, device_id: int | None = None):
+        limit_side_len = int(os.getenv("OCR_DET_LIMIT_SIDE_LEN", "960"))
+        limit_type = os.getenv("OCR_DET_LIMIT_TYPE", "max").strip().lower()
+        if limit_type not in {"max", "min", "resize_long"}:
+            logging.warning("Invalid OCR_DET_LIMIT_TYPE=%s, fallback to 'max'", limit_type)
+            limit_type = "max"
         pre_process_list = [{
             'DetResizeForTest': {
-                'limit_side_len': 960,
-                'limit_type': "max",
+                'limit_side_len': limit_side_len,
+                'limit_type': limit_type,
             }
         }, {
             'NormalizeImage': {

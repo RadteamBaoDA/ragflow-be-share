@@ -58,8 +58,16 @@ from rag.nlp import (
 def by_deepdoc(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", callback=None, pdf_cls=None, **kwargs):
     callback = callback
     binary = binary
+    parser_config = kwargs.get("parser_config", {}) or {}
     pdf_parser = pdf_cls() if pdf_cls else Pdf()
-    sections, tables = pdf_parser(filename if not binary else binary, from_page=from_page, to_page=to_page, callback=callback)
+    sections, tables = pdf_parser(
+        filename if not binary else binary,
+        from_page=from_page,
+        to_page=to_page,
+        callback=callback,
+        large_page_mode=bool(parser_config.get("large_page_mode", True)),
+        large_page_threshold_pt=max(0, int(parser_config.get("large_page_threshold_pt", 3000) or 3000)),
+    )
 
     tables = vision_figure_parser_pdf_wrapper(
         tbls=tables,
@@ -545,39 +553,53 @@ class Pdf(PdfParser):
     def __init__(self):
         super().__init__()
 
-    def __call__(self, filename, binary=None, from_page=0, to_page=100000, zoomin=3, callback=None, separate_tables_figures=False):
+    def __call__(
+        self,
+        filename,
+        binary=None,
+        from_page=0,
+        to_page=100000,
+        zoomin=3,
+        callback=None,
+        separate_tables_figures=False,
+        large_page_mode=True,
+        large_page_threshold_pt=3000,
+    ):
+        self.large_page_mode = bool(large_page_mode)
+        self.large_page_threshold_pt = max(0, int(large_page_threshold_pt or 0))
         start = timer()
         first_start = start
         callback(msg="OCR started")
         self.__images__(filename if not binary else binary, zoomin, from_page, to_page, callback)
+        parse_zoomin = getattr(self, "current_zoomin", zoomin)
         callback(msg="OCR finished ({:.2f}s)".format(timer() - start))
         logging.info("OCR({}~{}): {:.2f}s".format(from_page, to_page, timer() - start))
 
         start = timer()
-        self._layouts_rec(zoomin)
+        self._layouts_rec(parse_zoomin)
         callback(0.63, "Layout analysis ({:.2f}s)".format(timer() - start))
 
         start = timer()
-        self._table_transformer_job(zoomin)
+        self._table_transformer_job(parse_zoomin)
         callback(0.65, "Table analysis ({:.2f}s)".format(timer() - start))
 
         start = timer()
-        self._text_merge(zoomin=zoomin)
+        self._text_merge(zoomin=parse_zoomin)
         callback(0.67, "Text merged ({:.2f}s)".format(timer() - start))
 
         if separate_tables_figures:
-            tbls, figures = self._extract_table_figure(True, zoomin, True, True, True)
+            tbls, figures = self._extract_table_figure(True, parse_zoomin, True, True, True)
             self._concat_downward()
             logging.info("layouts cost: {}s".format(timer() - first_start))
-            return [(b["text"], self._line_tag(b, zoomin)) for b in self.boxes], tbls, figures
+            return [(b["text"], self._line_tag(b, parse_zoomin)) for b in self.boxes], tbls, figures
         else:
-            tbls = self._extract_table_figure(True, zoomin, True, True)
+            tbls = self._extract_table_figure(True, parse_zoomin, True, True)
             self._naive_vertical_merge()
             self._concat_downward()
             # self._final_reading_order_merge()
             # self._filter_forpages()
             logging.info("layouts cost: {}s".format(timer() - first_start))
-            return [(b["text"], self._line_tag(b, zoomin)) for b in self.boxes], tbls
+            return [(b["text"], self._line_tag(b, parse_zoomin)) for b in self.boxes], tbls
 
 
 class Markdown(MarkdownParser):
@@ -758,6 +780,8 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
     is_markdown = False
     table_context_size = max(0, int(parser_config.get("table_context_size", 0) or 0))
     image_context_size = max(0, int(parser_config.get("image_context_size", 0) or 0))
+    table_chunk_token_num = max(0, int(parser_config.get("table_chunk_token_num", 256) or 0))
+    table_header_repeat = bool(parser_config.get("table_header_repeat", True))
 
     doc = {"docnm_kwd": filename, "title_tks": rag_tokenizer.tokenize(re.sub(r"\.[a-zA-Z]+$", "", filename))}
     doc["title_sm_tks"] = rag_tokenizer.fine_grained_tokenize(doc["title_tks"])
@@ -853,12 +877,18 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
             return []
 
         if table_context_size or image_context_size:
-            tables = append_context2table_image4pdf(sections, tables, image_context_size)
+            tables = append_context2table_image4pdf(sections, tables, table_context_size)
 
         if name in ["tcadp", "docling", "mineru", "paddleocr"]:
             parser_config["chunk_token_num"] = 0
 
-        res = tokenize_table(tables, doc, is_english)
+        res = tokenize_table(
+            tables,
+            doc,
+            is_english,
+            table_chunk_token_num=table_chunk_token_num,
+            table_header_repeat=table_header_repeat,
+        )
         callback(0.8, "Finish parsing.")
 
     elif re.search(r"\.(csv|xlsx?)$", filename, re.IGNORECASE):
@@ -879,7 +909,13 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
 
             sections, tables = tcadp_parser.parse_pdf(filepath=filename, binary=binary, callback=callback, output_dir=os.environ.get("TCADP_OUTPUT_DIR", ""), file_type=file_type)
             parser_config["chunk_token_num"] = 0
-            res = tokenize_table(tables, doc, is_english)
+            res = tokenize_table(
+                tables,
+                doc,
+                is_english,
+                table_chunk_token_num=table_chunk_token_num,
+                table_header_repeat=table_header_repeat,
+            )
             callback(0.8, "Finish parsing.")
         else:
             # Default DeepDOC parser
@@ -942,7 +978,13 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
                 soup = markdown_parser.md_to_html(section_text)
                 hyperlink_urls = markdown_parser.get_hyperlink_urls(soup)
                 urls.update(hyperlink_urls)
-        res = tokenize_table(tables, doc, is_english)
+        res = tokenize_table(
+            tables,
+            doc,
+            is_english,
+            table_chunk_token_num=table_chunk_token_num,
+            table_header_repeat=table_header_repeat,
+        )
         callback(0.8, "Finish parsing.")
 
     elif re.search(r"\.(htm|html)$", filename, re.IGNORECASE):

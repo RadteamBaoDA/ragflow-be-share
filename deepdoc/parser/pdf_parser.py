@@ -106,6 +106,7 @@ class RAGFlowPdfParser:
 
         self.page_from = 0
         self.column_num = 1
+        self.current_zoomin = 3
 
     def __char_width(self, c):
         return (c["x1"] - c["x0"]) // max(len(c["text"]), 1)
@@ -1387,18 +1388,47 @@ class RAGFlowPdfParser:
         self.page_cum_height = [0]
         self.page_layout = []
         self.page_from = page_from
+        self.current_zoomin = zoomin
+        self.page_images = []
+        self.page_chars = []
+        self.page_zoomins = []
+        self.total_page = 0
         start = timer()
         try:
             with sys.modules[LOCK_KEY_pdfplumber]:
                 with pdfplumber.open(fnm) if isinstance(fnm, str) else pdfplumber.open(BytesIO(fnm)) as pdf:
                     self.pdf = pdf
-                    self.page_images = [p.to_image(resolution=72 * zoomin, antialias=True).annotated for i, p in enumerate(self.pdf.pages[page_from:page_to])]
+                    selected_pages = list(self.pdf.pages[page_from:page_to])
+
+                    effective_zoomin = zoomin
+                    large_page_mode = bool(getattr(self, "large_page_mode", True))
+                    threshold_pt = max(0, int(getattr(self, "large_page_threshold_pt", 3000) or 0))
+                    max_zoomin = max(zoomin, int(getattr(self, "large_page_max_zoomin", 6) or 6))
+
+                    if large_page_mode and threshold_pt > 0 and selected_pages:
+                        max_long_edge_pt = max(max(float(p.width), float(p.height)) for p in selected_pages)
+                        if max_long_edge_pt >= threshold_pt:
+                            scale = max_long_edge_pt / float(threshold_pt)
+                            boosted_zoomin = int(math.ceil(zoomin * min(2.0, max(1.15, scale))))
+                            effective_zoomin = min(max_zoomin, max(zoomin, boosted_zoomin))
+                            logging.info(
+                                "Large page detected (long edge %.1fpt >= %dpt), adaptive zoom %s -> %s",
+                                max_long_edge_pt,
+                                threshold_pt,
+                                zoomin,
+                                effective_zoomin,
+                            )
+
+                    render_resolution = 72 * effective_zoomin
+                    self.page_images = [p.to_image(resolution=render_resolution, antialias=True).annotated for p in selected_pages]
+                    self.page_zoomins = [effective_zoomin] * len(self.page_images)
+                    self.current_zoomin = effective_zoomin
 
                     try:
-                        self.page_chars = [[c for c in page.dedupe_chars().chars if self._has_color(c)] for page in self.pdf.pages[page_from:page_to]]
+                        self.page_chars = [[c for c in page.dedupe_chars().chars if self._has_color(c)] for page in selected_pages]
                     except Exception as e:
                         logging.warning(f"Failed to extract characters for pages {page_from}-{page_to}: {str(e)}")
-                        self.page_chars = [[] for _ in range(page_to - page_from)]  # If failed to extract, using empty list instead.
+                        self.page_chars = [[] for _ in range(len(self.page_images))]
 
                     self.total_page = len(self.pdf.pages)
 
@@ -1450,13 +1480,14 @@ class RAGFlowPdfParser:
                     chars[j]["text"] += " "
                 j += 1
 
+            page_zoomin = self.page_zoomins[i] if i < len(self.page_zoomins) else self.current_zoomin
             if limiter:
                 async with limiter:
-                    await thread_pool_exec(self.__ocr, i + 1, img, chars, zoomin, id)
+                    await thread_pool_exec(self.__ocr, i + 1, img, chars, page_zoomin, id)
             else:
-                self.__ocr(i + 1, img, chars, zoomin, id)
+                self.__ocr(i + 1, img, chars, page_zoomin, id)
 
-            if callback and i % 6 == 5:
+            if callback and self.page_images and i % 6 == 5:
                 callback((i + 1) * 0.6 / len(self.page_images))
 
         async def __img_ocr_launcher():
@@ -1464,7 +1495,8 @@ class RAGFlowPdfParser:
                 chars = self.page_chars[i] if not self.is_english else []
                 self.mean_height.append(np.median(sorted([c["height"] for c in chars])) if chars else 0)
                 self.mean_width.append(np.median(sorted([c["width"] for c in chars])) if chars else 8)
-                self.page_cum_height.append(img.size[1] / zoomin)
+                page_zoomin = self.page_zoomins[i] if i < len(self.page_zoomins) else self.current_zoomin
+                self.page_cum_height.append(img.size[1] / page_zoomin)
                 return chars
 
             if self.parallel_limiter:
@@ -1515,8 +1547,9 @@ class RAGFlowPdfParser:
 
         self.page_cum_height = np.cumsum(self.page_cum_height)
         assert len(self.page_cum_height) == len(self.page_images) + 1
-        if len(self.boxes) == 0 and zoomin < 9:
-            self.__images__(fnm, zoomin * 3, page_from, page_to, callback)
+        retry_zoomin = self.current_zoomin
+        if len(self.boxes) == 0 and retry_zoomin < 9:
+            self.__images__(fnm, retry_zoomin * 3, page_from, page_to, callback)
 
     def __call__(self, fnm, need_image=True, zoomin=3, return_html=False, auto_rotate_tables=None):
         """
@@ -1536,22 +1569,24 @@ class RAGFlowPdfParser:
             auto_rotate_tables = os.getenv("TABLE_AUTO_ROTATE", "true").lower() in ("true", "1", "yes")
 
         self.__images__(fnm, zoomin)
-        self._layouts_rec(zoomin)
-        self._table_transformer_job(zoomin, auto_rotate=auto_rotate_tables)
-        self._text_merge()
+        parse_zoomin = getattr(self, "current_zoomin", zoomin)
+        self._layouts_rec(parse_zoomin)
+        self._table_transformer_job(parse_zoomin, auto_rotate=auto_rotate_tables)
+        self._text_merge(zoomin=parse_zoomin)
         self._concat_downward()
         self._filter_forpages()
-        tbls = self._extract_table_figure(need_image, zoomin, return_html, False)
-        return self.__filterout_scraps(deepcopy(self.boxes), zoomin), tbls
+        tbls = self._extract_table_figure(need_image, parse_zoomin, return_html, False)
+        return self.__filterout_scraps(deepcopy(self.boxes), parse_zoomin), tbls
 
     def parse_into_bboxes(self, fnm, callback=None, zoomin=3):
         start = timer()
         self.__images__(fnm, zoomin, callback=callback)
+        parse_zoomin = getattr(self, "current_zoomin", zoomin)
         if callback:
             callback(0.40, "OCR finished ({:.2f}s)".format(timer() - start))
 
         start = timer()
-        self._layouts_rec(zoomin)
+        self._layouts_rec(parse_zoomin)
         if callback:
             callback(0.63, "Layout analysis ({:.2f}s)".format(timer() - start))
 
@@ -1559,19 +1594,19 @@ class RAGFlowPdfParser:
         auto_rotate_tables = os.getenv("TABLE_AUTO_ROTATE", "true").lower() in ("true", "1", "yes")
 
         start = timer()
-        self._table_transformer_job(zoomin, auto_rotate=auto_rotate_tables)
+        self._table_transformer_job(parse_zoomin, auto_rotate=auto_rotate_tables)
         if callback:
             callback(0.83, "Table analysis ({:.2f}s)".format(timer() - start))
 
         start = timer()
-        self._text_merge()
+        self._text_merge(zoomin=parse_zoomin)
         self._concat_downward()
-        self._naive_vertical_merge(zoomin)
+        self._naive_vertical_merge(parse_zoomin)
         if callback:
             callback(0.92, "Text merged ({:.2f}s)".format(timer() - start))
 
         start = timer()
-        tbls, figs = self._extract_table_figure(True, zoomin, True, True, True)
+        tbls, figs = self._extract_table_figure(True, parse_zoomin, True, True, True)
 
         def insert_table_figures(tbls_or_figs, layout_type):
             def min_rectangle_distance(rect1, rect2):
@@ -1621,8 +1656,8 @@ class RAGFlowPdfParser:
                 )
 
         for b in self.boxes:
-            b["position_tag"] = self._line_tag(b, zoomin)
-            b["image"] = self.crop(b["position_tag"], zoomin)
+            b["position_tag"] = self._line_tag(b, parse_zoomin)
+            b["image"] = self.crop(b["position_tag"], parse_zoomin)
             b["positions"] = [[pos[0][-1] + 1, *pos[1:]] for pos in RAGFlowPdfParser.extract_positions(b["position_tag"])]
 
         insert_table_figures(tbls, "table")
@@ -1644,7 +1679,11 @@ class RAGFlowPdfParser:
             poss.append(([int(p) - 1 for p in pn.split("-")], left, right, top, bottom))
         return poss
 
-    def crop(self, text, ZM=3, need_position=False):
+    def crop(self, text, ZM=None, need_position=False):
+        if ZM is None:
+            ZM = getattr(self, "current_zoomin", 3)
+        if ZM <= 0:
+            ZM = 3
         imgs = []
         poss = self.extract_positions(text)
         if not poss:
@@ -1810,13 +1849,16 @@ class VisionParser(RAGFlowPdfParser):
         self.outlines = []
 
     def __images__(self, fnm, zoomin=3, page_from=0, page_to=299, callback=None):
+        self.current_zoomin = zoomin
         try:
             with sys.modules[LOCK_KEY_pdfplumber]:
                 self.pdf = pdfplumber.open(fnm) if isinstance(fnm, str) else pdfplumber.open(BytesIO(fnm))
                 self.page_images = [p.to_image(resolution=72 * zoomin).annotated for i, p in enumerate(self.pdf.pages[page_from:page_to])]
+                self.page_zoomins = [zoomin] * len(self.page_images)
                 self.total_page = len(self.pdf.pages)
         except Exception:
             self.page_images = None
+            self.page_zoomins = []
             self.total_page = 0
             logging.exception("VisionParser __images__")
 

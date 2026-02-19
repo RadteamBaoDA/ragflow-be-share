@@ -67,6 +67,7 @@ def by_deepdoc(filename, binary=None, from_page=0, to_page=100000, lang="Chinese
         callback=callback,
         large_page_mode=bool(parser_config.get("large_page_mode", True)),
         large_page_threshold_pt=max(0, int(parser_config.get("large_page_threshold_pt", 3000) or 3000)),
+        large_page_max_zoomin=max(1, int(parser_config.get("large_page_max_zoomin", 6) or 6)),
     )
 
     tables = vision_figure_parser_pdf_wrapper(
@@ -564,9 +565,11 @@ class Pdf(PdfParser):
         separate_tables_figures=False,
         large_page_mode=True,
         large_page_threshold_pt=3000,
+        large_page_max_zoomin=6,
     ):
         self.large_page_mode = bool(large_page_mode)
         self.large_page_threshold_pt = max(0, int(large_page_threshold_pt or 0))
+        self.large_page_max_zoomin = max(1, int(large_page_max_zoomin or 1))
         start = timer()
         first_start = start
         callback(msg="OCR started")

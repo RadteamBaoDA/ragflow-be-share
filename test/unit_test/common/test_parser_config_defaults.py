@@ -23,6 +23,7 @@ def test_get_parser_config_contains_table_and_large_page_defaults():
     assert cfg["table_header_repeat"] is True
     assert cfg["large_page_mode"] is True
     assert cfg["large_page_threshold_pt"] == 3000
+    assert cfg["large_page_max_zoomin"] == 6
 
 
 def test_get_parser_config_keeps_explicit_overrides():
@@ -33,9 +34,11 @@ def test_get_parser_config_keeps_explicit_overrides():
             "table_header_repeat": False,
             "large_page_mode": False,
             "large_page_threshold_pt": 4200,
+            "large_page_max_zoomin": 8,
         },
     )
     assert cfg["table_chunk_token_num"] == 120
     assert cfg["table_header_repeat"] is False
     assert cfg["large_page_mode"] is False
     assert cfg["large_page_threshold_pt"] == 4200
+    assert cfg["large_page_max_zoomin"] == 8

@@ -1403,7 +1403,16 @@ class RAGFlowPdfParser:
                     effective_zoomin = zoomin
                     large_page_mode = bool(getattr(self, "large_page_mode", True))
                     threshold_pt = max(0, int(getattr(self, "large_page_threshold_pt", 3000) or 0))
-                    max_zoomin = max(zoomin, int(getattr(self, "large_page_max_zoomin", 6) or 6))
+                    max_zoomin_raw = getattr(self, "large_page_max_zoomin", None)
+                    if max_zoomin_raw is None:
+                        max_zoomin_raw = os.getenv("DEEPDOC_LARGE_PAGE_MAX_ZOOMIN", "6")
+                    try:
+                        max_zoomin_cfg = int(max_zoomin_raw)
+                    except (TypeError, ValueError):
+                        logging.warning("Invalid DEEPDOC large page max zoom '%s', fallback to 6", max_zoomin_raw)
+                        max_zoomin_cfg = 6
+                    max_zoomin_cfg = min(12, max(1, max_zoomin_cfg))
+                    max_zoomin = max(zoomin, max_zoomin_cfg)
 
                     if large_page_mode and threshold_pt > 0 and selected_pages:
                         max_long_edge_pt = max(max(float(p.width), float(p.height)) for p in selected_pages)

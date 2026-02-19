@@ -368,6 +368,7 @@ def get_parser_config(chunk_method, parser_config):
         "table_header_repeat": True,
         "large_page_mode": True,
         "large_page_threshold_pt": 3000,
+        "large_page_max_zoomin": 6,
     }
     key_mapping = {
         "naive": {

@@ -354,6 +354,7 @@ class ParserConfig(Base):
     image_context_size: Annotated[int, Field(default=0, ge=0, le=4096)]
     large_page_mode: Annotated[bool, Field(default=True)]
     large_page_threshold_pt: Annotated[int, Field(default=3000, ge=1000, le=20000)]
+    large_page_max_zoomin: Annotated[int, Field(default=6, ge=1, le=12)]
     delimiter: Annotated[str, Field(default=r"\n", min_length=1)]
     graphrag: Annotated[GraphragConfig, Field(default_factory=lambda: GraphragConfig(use_graphrag=False))]
     html4excel: Annotated[bool, Field(default=False)]

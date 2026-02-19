@@ -34,13 +34,14 @@ from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter
 from api.db.services.tenant_llm_service import TenantLLMService
+from api.utils.language_utils import detect_question_language, detect_question_language_async
 from common.time_utils import current_timestamp, datetime_format
 from rag.graphrag.general.mind_map_extractor import MindMapExtractor
 from rag.advanced_rag import DeepResearcher
 from rag.app.tag import label_question
 from rag.nlp.search import index_name
 from rag.prompts.generator import chunks_format, citation_prompt, cross_languages, full_question, kb_prompt, keyword_extraction, message_fit_in, \
-    PROMPT_JINJA_ENV, ASK_SUMMARY
+    PROMPT_JINJA_ENV, ASK_SUMMARY, html_to_markdown
 from common.token_utils import num_tokens_from_string
 from rag.utils.tavily_conn import Tavily
 from common.string_utils import remove_redundant_spaces
@@ -182,7 +183,7 @@ class DialogService(CommonService):
 async def async_chat_solo(dialog, messages, stream=True):
     attachments = ""
     if "files" in messages[-1]:
-        attachments = "\n\n".join(FileService.get_files(messages[-1]["files"]))
+        attachments = html_to_markdown("\n\n".join(FileService.get_files(messages[-1]["files"])))
     if TenantLLMService.llm_id2llm_type(dialog.llm_id) == "image2text":
         chat_mdl = LLMBundle(dialog.tenant_id, LLMType.IMAGE2TEXT, dialog.llm_id)
     else:
@@ -192,11 +193,12 @@ async def async_chat_solo(dialog, messages, stream=True):
     tts_mdl = None
     if prompt_config.get("tts"):
         tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS)
-    msg = [{"role": m["role"], "content": re.sub(r"##\d+\$\$", "", m["content"])} for m in messages if m["role"] != "system"]
+    msg = [{"role": m["role"], "content": normalize_content_for_llm(m["content"])} for m in messages if m["role"] != "system"]
     if attachments and msg:
         msg[-1]["content"] += attachments
+    system_prompt = html_to_markdown(prompt_config.get("system", ""))
     if stream:
-        stream_iter = chat_mdl.async_chat_streamly_delta(prompt_config.get("system", ""), msg, dialog.llm_setting)
+        stream_iter = chat_mdl.async_chat_streamly_delta(system_prompt, msg, dialog.llm_setting)
         async for kind, value, state in _stream_with_think_delta(stream_iter):
             if kind == "marker":
                 flags = {"start_to_think": True} if value == "<think>" else {"end_to_think": True}
@@ -204,7 +206,7 @@ async def async_chat_solo(dialog, messages, stream=True):
                 continue
             yield {"answer": value, "reference": {}, "audio_binary": tts(tts_mdl, value), "prompt": "", "created_at": time.time(), "final": False}
     else:
-        answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting)
+        answer = await chat_mdl.async_chat(system_prompt, msg, dialog.llm_setting)
         user_content = msg[-1].get("content", "[content not available]")
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
         yield {"answer": answer, "reference": {}, "audio_binary": tts(tts_mdl, answer), "prompt": "", "created_at": time.time()}
@@ -241,6 +243,14 @@ BAD_CITATION_PATTERNS = [
     re.compile(r"【\s*ID\s*[: ]*\s*(\d+)\s*】"),  # 【ID: 12】
     re.compile(r"ref\s*(\d+)", flags=re.IGNORECASE),  # ref12、REF 12
 ]
+
+
+def normalize_content_for_llm(content):
+    """Normalize message content before sending to LLM."""
+    if not isinstance(content, str):
+        return content
+    content = re.sub(r"##\d+\$\$", "", content)
+    return html_to_markdown(content)
 
 
 def repair_bad_citation_formats(answer: str, kbinfos: dict, idx: set):
@@ -313,13 +323,13 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
     bind_models_ts = timer()
 
     retriever = settings.retriever
-    questions = [m["content"] for m in messages if m["role"] == "user"][-3:]
+    questions = [html_to_markdown(m["content"]) for m in messages if m["role"] == "user"][-3:]
     attachments = kwargs["doc_ids"].split(",") if "doc_ids" in kwargs else []
     attachments_= ""
     if "doc_ids" in messages[-1]:
         attachments = messages[-1]["doc_ids"]
     if "files" in messages[-1]:
-        attachments_ = "\n\n".join(FileService.get_files(messages[-1]["files"]))
+        attachments_ = html_to_markdown("\n\n".join(FileService.get_files(messages[-1]["files"])))
 
     prompt_config = dialog.prompt_config
     field_map = KnowledgebaseService.get_field_map(dialog.kb_ids)
@@ -339,20 +349,30 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
     logging.debug(f"attachments={attachments}, param_keys={param_keys}, embd_mdl={embd_mdl}")
 
     for p in prompt_config["parameters"]:
-        if p["key"] == "knowledge":
+        if p["key"] in {"knowledge", "answer_language"}:
             continue
         if p["key"] not in kwargs and not p["optional"]:
             raise KeyError("Miss parameter: " + p["key"])
         if p["key"] not in kwargs:
             prompt_config["system"] = prompt_config["system"].replace("{%s}" % p["key"], " ")
 
+    llm_messages = [{"role": m["role"], "content": normalize_content_for_llm(m["content"])} for m in messages if "content" in m]
     if len(questions) > 1 and prompt_config.get("refine_multiturn"):
-        questions = [await full_question(dialog.tenant_id, dialog.llm_id, messages)]
+        questions = [await full_question(dialog.tenant_id, dialog.llm_id, llm_messages)]
     else:
         questions = questions[-1:]
 
+    original_lang = await detect_question_language_async(questions[0])
+
     if prompt_config.get("cross_languages"):
         questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], prompt_config["cross_languages"])]
+    elif kbs:
+        dataset_lang = (kbs[0].language or "").strip()
+        if dataset_lang and dataset_lang.lower() not in ["english", "en"]:
+            translation_langs = [dataset_lang]
+            if original_lang and original_lang.lower() != dataset_lang.lower():
+                translation_langs.append(original_lang)
+            questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], translation_langs)]
 
     if dialog.meta_data_filter:
         metas = DocMetadataService.get_flatted_meta_by_kbs(dialog.kb_ids)
@@ -456,13 +476,14 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         return
 
     kwargs["knowledge"] = "\n------\n" + "\n\n------\n\n".join(knowledges)
+    kwargs["answer_language"] = original_lang or kwargs.get("answer_language") or "English"
     gen_conf = dialog.llm_setting
 
-    msg = [{"role": "system", "content": prompt_config["system"].format(**kwargs)+attachments_}]
+    msg = [{"role": "system", "content": html_to_markdown(prompt_config["system"].format(**kwargs) + attachments_)}]
     prompt4citation = ""
     if knowledges and (prompt_config.get("quote", True) and kwargs.get("quote", True)):
         prompt4citation = citation_prompt()
-    msg.extend([{"role": m["role"], "content": re.sub(r"##\d+\$\$", "", m["content"])} for m in messages if m["role"] != "system"])
+    msg.extend([{"role": m["role"], "content": m["content"]} for m in llm_messages if m["role"] != "system"])
     used_token_count, msg = message_fit_in(msg, int(max_tokens * 0.95))
     assert len(msg) >= 2, f"message_fit_in has bug: {msg}"
     prompt = msg[0]["content"]
@@ -1083,6 +1104,7 @@ async def _stream_with_think_delta(stream_iter, min_tokens: int = 16):
         yield ("marker", "</think>", state)
 
 async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_config={}):
+    question = html_to_markdown(question)
     doc_ids = search_config.get("doc_ids", [])
     rerank_mdl = None
     kb_ids = search_config.get("kb_ids", kb_ids)
@@ -1107,8 +1129,20 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
         metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
+    translated_question = question
+    if search_config.get("cross_languages"):
+        translated_question = await cross_languages(tenant_id, None, question, search_config["cross_languages"])
+    elif kbs:
+        dataset_lang = (kbs[0].language or "").strip()
+        if dataset_lang and dataset_lang.lower() not in ["english", "en"]:
+            original_lang = await detect_question_language_async(question)
+            translation_langs = [dataset_lang]
+            if original_lang and original_lang.lower() != dataset_lang.lower():
+                translation_langs.append(original_lang)
+            translated_question = await cross_languages(tenant_id, chat_llm_name, question, translation_langs)
+
     kbinfos = await retriever.retrieval(
-        question=question,
+        question=translated_question,
         embd_mdl=embd_mdl,
         tenant_ids=tenant_ids,
         kb_ids=kb_ids,
@@ -1183,8 +1217,20 @@ async def gen_mindmap(question, kb_ids, tenant_id, search_config={}):
         metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
         doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, doc_ids)
 
+    translated_question = question
+    if search_config.get("cross_languages"):
+        translated_question = await cross_languages(tenant_id, None, question, search_config["cross_languages"])
+    elif kbs:
+        dataset_lang = (kbs[0].language or "").strip()
+        if dataset_lang and dataset_lang.lower() not in ["english", "en"]:
+            original_lang = await detect_question_language_async(question)
+            translation_langs = [dataset_lang]
+            if original_lang and original_lang.lower() != dataset_lang.lower():
+                translation_langs.append(original_lang)
+            translated_question = await cross_languages(tenant_id, None, question, translation_langs)
+
     ranks = await settings.retriever.retrieval(
-        question=question,
+        question=translated_question,
         embd_mdl=embd_mdl,
         tenant_ids=tenant_ids,
         kb_ids=kb_ids,

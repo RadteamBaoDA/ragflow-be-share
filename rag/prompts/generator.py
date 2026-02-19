@@ -22,6 +22,7 @@ from copy import deepcopy
 from typing import Tuple
 import jinja2
 import json_repair
+from markdownify import markdownify
 from common.misc_utils import hash_str2int
 from rag.nlp import rag_tokenizer
 from rag.prompts.template import load_prompt
@@ -31,10 +32,32 @@ from common.token_utils import encoder, num_tokens_from_string
 STOP_TOKEN = "<|STOP|>"
 COMPLETE_TASK = "complete_task"
 INPUT_UTILIZATION = 0.5
+HTML_TAG_PATTERN = re.compile(r"</?[a-zA-Z][^>]*>")
 
 
 def get_value(d, k1, k2):
     return d.get(k1, d.get(k2))
+
+
+def html_to_markdown(content):
+    """Convert HTML markup to markdown to reduce prompt size and preserve structure."""
+    if not isinstance(content, str) or not content:
+        return content
+
+    if not HTML_TAG_PATTERN.search(content):
+        return content
+
+    try:
+        markdown_content = markdownify(
+            content,
+            heading_style="ATX",
+            bullets="-",
+            strip=["script", "style"],
+        ).strip()
+        return markdown_content if markdown_content else content
+    except Exception as e:
+        logging.warning(f"Failed to convert HTML to markdown: {e}")
+        return content
 
 
 def chunks_format(reference):
@@ -137,7 +160,7 @@ def kb_prompt(kbinfos, max_tokens, hash_id=False):
         for k, v in docs.get(get_value(ck, "doc_id", "document_id"), {}).items():
             cnt += draw_node(k, v)
         cnt += "\n└── Content:\n"
-        cnt += get_value(ck, "content", "content_with_weight")
+        cnt += html_to_markdown(get_value(ck, "content", "content_with_weight"))
         knowledges.append(cnt)
 
     return knowledges

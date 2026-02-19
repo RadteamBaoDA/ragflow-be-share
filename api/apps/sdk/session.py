@@ -41,6 +41,7 @@ from api.db.services.llm_service import LLMBundle
 from common.metadata_utils import apply_meta_data_filter, convert_conditions, meta_filter
 from api.db.services.search_service import SearchService
 from api.db.services.user_service import TenantService,UserTenantService
+from api.utils.language_utils import detect_question_language_async
 from common.misc_utils import get_uuid
 from api.utils.api_utils import check_duplicate_ids, get_data_openai, get_error_data_result, get_json_result, \
     get_result, get_request_json, server_error_response, token_required, validate_request
@@ -1133,6 +1134,14 @@ async def retrieval_test_embedded():
 
         if langs:
             _question = await cross_languages(kb.tenant_id, None, _question, langs)
+        elif kb.language and kb.language.strip():
+            dataset_lang = kb.language.strip()
+            if dataset_lang.lower() not in ["english", "en"]:
+                original_lang = await detect_question_language_async(question)
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                _question = await cross_languages(kb.tenant_id, None, _question, translation_langs)
 
         embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING.value, llm_name=kb.embd_id)
 

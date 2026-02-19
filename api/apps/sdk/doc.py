@@ -37,6 +37,7 @@ from api.db.services.llm_service import LLMBundle
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.db.services.task_service import TaskService, queue_tasks, cancel_all_task_of
 from common.metadata_utils import meta_filter, convert_conditions
+from api.utils.language_utils import detect_question_language_async
 from api.utils.api_utils import check_duplicate_ids, construct_json_result, get_error_data_result, get_parser_config, get_result, server_error_response, token_required, \
     get_request_json
 from rag.app.qa import beAdoc, rmPrefix
@@ -1604,6 +1605,14 @@ async def retrieval_test(tenant_id):
 
         if langs:
             question = await cross_languages(kb.tenant_id, None, question, langs)
+        elif kb.language and kb.language.strip():
+            dataset_lang = kb.language.strip()
+            if dataset_lang.lower() not in ["english", "en"]:
+                original_lang = await detect_question_language_async(question)
+                translation_langs = [dataset_lang]
+                if original_lang and original_lang.lower() != dataset_lang.lower():
+                    translation_langs.append(original_lang)
+                question = await cross_languages(kb.tenant_id, None, question, translation_langs)
 
         if req.get("keyword", False):
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)

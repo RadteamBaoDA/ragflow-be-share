@@ -1,14 +1,23 @@
 services:
   ragflow-cpu:
+    environment:
+      DEEPDOC_LARGE_PAGE_MAX_ZOOMIN: "6"
+      OCR_DET_LIMIT_SIDE_LEN: "1280"
+      OCR_DET_LIMIT_TYPE: "max"
+      TABLE_AUTO_ROTATE: "true"
+
     volumes:
+      - ../../ragflow-fe-share/dist:/ragflow/web/dist
       - ../api/apps/chunk_app.py:/ragflow/api/apps/chunk_app.py:ro
       - ../api/apps/sdk/doc.py:/ragflow/api/apps/sdk/doc.py:ro
       - ../api/apps/sdk/session.py:/ragflow/api/apps/sdk/session.py:ro
+      - ../api/apps/sdk/dataset.py:/ragflow/api/apps/sdk/dataset.py:ro
       - ../api/db/services/dialog_service.py:/ragflow/api/db/services/dialog_service.py:ro
       - ../api/utils/language_utils.py:/ragflow/api/utils/language_utils.py:ro
-      - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
+      - ../api/utils/dataset_utils.py:/ragflow/api/utils/dataset_utils.py:ro
       - ../api/utils/api_utils.py:/ragflow/api/utils/api_utils.py:ro
       - ../api/utils/validation_utils.py:/ragflow/api/utils/validation_utils.py:ro
+      - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
       - ../deepdoc/parser/pdf_parser.py:/ragflow/deepdoc/parser/pdf_parser.py:ro
       - ../deepdoc/vision/ocr.py:/ragflow/deepdoc/vision/ocr.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro
@@ -18,15 +27,22 @@ services:
       - ../test/unit_test/common/test_parser_config_defaults.py:/ragflow/test/unit_test/common/test_parser_config_defaults.py:ro
 
   ragflow-gpu:
+    environment:
+      DEEPDOC_LARGE_PAGE_MAX_ZOOMIN: "6"
+      OCR_DET_LIMIT_SIDE_LEN: "1280"
+      OCR_DET_LIMIT_TYPE: "max"
+      TABLE_AUTO_ROTATE: "true"
+
     volumes:
       - ../api/apps/chunk_app.py:/ragflow/api/apps/chunk_app.py:ro
       - ../api/apps/sdk/doc.py:/ragflow/api/apps/sdk/doc.py:ro
       - ../api/apps/sdk/session.py:/ragflow/api/apps/sdk/session.py:ro
       - ../api/db/services/dialog_service.py:/ragflow/api/db/services/dialog_service.py:ro
       - ../api/utils/language_utils.py:/ragflow/api/utils/language_utils.py:ro
-      - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
+      - ../api/utils/dataset_utils.py:/ragflow/api/utils/dataset_utils.py:ro
       - ../api/utils/api_utils.py:/ragflow/api/utils/api_utils.py:ro
       - ../api/utils/validation_utils.py:/ragflow/api/utils/validation_utils.py:ro
+      - ../rag/prompts/generator.py:/ragflow/rag/prompts/generator.py:ro
       - ../deepdoc/parser/pdf_parser.py:/ragflow/deepdoc/parser/pdf_parser.py:ro
       - ../deepdoc/vision/ocr.py:/ragflow/deepdoc/vision/ocr.py:ro
       - ../rag/app/naive.py:/ragflow/rag/app/naive.py:ro

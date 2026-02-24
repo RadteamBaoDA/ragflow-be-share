@@ -86,6 +86,9 @@ async def create(tenant_id):
             description:
               type: string
               description: Optional dataset description.
+            language:
+              type: string
+              description: Optional dataset language (e.g. "English", "Chinese", "Japanese").
             embedding_model:
               type: string
               description: Optional embedding model name; if omitted, the tenant's default embedding model is used.
@@ -343,6 +346,11 @@ async def update(tenant_id, dataset_id):
 
         if req.get("parser_config"):
             req["parser_config"] = deep_merge(kb.parser_config, req["parser_config"])
+            # Expand image_table_context_window into both native fields
+            if "image_table_context_window" in req["parser_config"] and req["parser_config"]["image_table_context_window"] is not None:
+                ctx = req["parser_config"]["image_table_context_window"]
+                req["parser_config"]["image_context_size"] = ctx
+                req["parser_config"]["table_context_size"] = ctx
 
         if (chunk_method := req.get("parser_id")) and chunk_method != kb.parser_id:
             if not req.get("parser_config"):

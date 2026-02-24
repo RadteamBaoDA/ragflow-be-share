@@ -436,6 +436,13 @@ def get_parser_config(chunk_method, parser_config):
     merged_config = deep_merge(base_defaults, default_config)
     merged_config = deep_merge(merged_config, parser_config)
 
+    # Expand image_table_context_window convenience field into both native fields
+    # Keep the original field so RAGFlow UI can also read it
+    if "image_table_context_window" in merged_config and merged_config["image_table_context_window"] is not None:
+        ctx = merged_config["image_table_context_window"]
+        merged_config["image_context_size"] = ctx
+        merged_config["table_context_size"] = ctx
+
     return merged_config
 
 

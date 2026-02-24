@@ -365,12 +365,21 @@ class ParserConfig(Base):
     filename_embd_weight: Annotated[float | None, Field(default=0.1, ge=0.0, le=1.0)]
     task_page_size: Annotated[int | None, Field(default=None, ge=1)]
     pages: Annotated[list[list[int]] | None, Field(default=None)]
+    # Ingestion pipeline fields (RAGFlow native names)
+    toc_extraction: Annotated[bool, Field(default=False)]
+    enable_children: Annotated[bool, Field(default=False)]
+    children_delimiter: Annotated[str | None, Field(default=None)]
+    auto_metadata: Annotated[bool, Field(default=True)]
+    # Convenience field: sets both image_context_size and table_context_size
+    image_table_context_window: Annotated[int | None, Field(default=None, ge=0, le=4096)]
+    overlapped_percent: Annotated[float, Field(default=0.0, ge=0.0, le=1.0)]
 
 
 class CreateDatasetReq(Base):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=DATASET_NAME_LIMIT), Field(...)]
     avatar: Annotated[str | None, Field(default=None, max_length=65535)]
     description: Annotated[str | None, Field(default=None, max_length=65535)]
+    language: Annotated[str | None, Field(default=None, max_length=32)]
     embedding_model: Annotated[str | None, Field(default=None, max_length=255, serialization_alias="embd_id")]
     permission: Annotated[Literal["me", "team"], Field(default="me", min_length=1, max_length=16)]
     chunk_method: Annotated[str | None, Field(default=None, serialization_alias="parser_id")]

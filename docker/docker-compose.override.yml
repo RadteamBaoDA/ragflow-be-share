@@ -12,6 +12,7 @@ services:
       - ../api/apps/sdk/doc.py:/ragflow/api/apps/sdk/doc.py:ro
       - ../api/apps/sdk/session.py:/ragflow/api/apps/sdk/session.py:ro
       - ../api/apps/sdk/dataset.py:/ragflow/api/apps/sdk/dataset.py:ro
+      - ../api/apps/sdk/search.py:/ragflow/api/apps/sdk/search.py:ro
       - ../api/db/services/dialog_service.py:/ragflow/api/db/services/dialog_service.py:ro
       - ../api/utils/language_utils.py:/ragflow/api/utils/language_utils.py:ro
       - ../api/utils/dataset_utils.py:/ragflow/api/utils/dataset_utils.py:ro
@@ -37,6 +38,7 @@ services:
       - ../api/apps/chunk_app.py:/ragflow/api/apps/chunk_app.py:ro
       - ../api/apps/sdk/doc.py:/ragflow/api/apps/sdk/doc.py:ro
       - ../api/apps/sdk/session.py:/ragflow/api/apps/sdk/session.py:ro
+      - ../api/apps/sdk/search.py:/ragflow/api/apps/sdk/search.py:ro
       - ../api/db/services/dialog_service.py:/ragflow/api/db/services/dialog_service.py:ro
       - ../api/utils/language_utils.py:/ragflow/api/utils/language_utils.py:ro
       - ../api/utils/dataset_utils.py:/ragflow/api/utils/dataset_utils.py:ro

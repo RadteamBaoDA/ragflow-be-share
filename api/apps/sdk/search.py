@@ -38,7 +38,7 @@ from api.utils.api_utils import (
 )
 
 
-@manager.route("/search", methods=["POST"])  # noqa: F821
+@manager.route("/searchs", methods=["POST"])  # noqa: F821
 @token_required
 async def create(tenant_id):
     """
@@ -118,7 +118,7 @@ async def create(tenant_id):
             return server_error_response(e)
 
 
-@manager.route("/search/<search_id>", methods=["PUT"])  # noqa: F821
+@manager.route("/searchs/<search_id>", methods=["PUT"])  # noqa: F821
 @token_required
 async def update(tenant_id, search_id):
     """
@@ -224,7 +224,7 @@ async def update(tenant_id, search_id):
         return server_error_response(e)
 
 
-@manager.route("/search/<search_id>", methods=["GET"])  # noqa: F821
+@manager.route("/searchs/<search_id>", methods=["GET"])  # noqa: F821
 @token_required
 def detail(tenant_id, search_id):
     """
@@ -270,7 +270,7 @@ def detail(tenant_id, search_id):
         return server_error_response(e)
 
 
-@manager.route("/search", methods=["GET"])  # noqa: F821
+@manager.route("/searchs", methods=["GET"])  # noqa: F821
 @token_required
 def list_search_apps(tenant_id):
     """
@@ -338,7 +338,7 @@ def list_search_apps(tenant_id):
         return server_error_response(e)
 
 
-@manager.route("/search/<search_id>", methods=["DELETE"])  # noqa: F821
+@manager.route("/searchs/<search_id>", methods=["DELETE"])  # noqa: F821
 @token_required
 def rm(tenant_id, search_id):
     """
